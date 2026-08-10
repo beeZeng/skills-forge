@@ -63,8 +63,17 @@ async function packSkillZip({ homeDir, skill, version } = {}) {
     }
     if (fs.statSync(dir).isFile()) dir = path.dirname(dir)
 
-    const meta = { ...skill, version: version || skill.version || '1.0.0' }
-    ensureSkillPackage(dir, meta)
+    const meta = {
+      ...skill,
+      version: version || skill.version || '1.0.0',
+      origin: skill.origin || 'created',
+    }
+    if (!meta.content) {
+      const skillMd = path.join(dir, 'SKILL.md')
+      if (fs.existsSync(skillMd)) meta.content = fs.readFileSync(skillMd, 'utf8')
+    }
+    const written = ensureSkillPackage(dir, meta)
+    if (!written.ok) return { ok: false, error: written.error || '打包前写入失败' }
     const fm = ensureFrontmatter(dir, meta)
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-publish-'))

@@ -36,6 +36,32 @@ import type {
 
 let hubHeartbeatTimer: ReturnType<typeof setInterval> | null = null
 
+/** Snapshot of path settings at hydrate / after relaunch-applied state; used to clear restart banner on revert. */
+let sessionBaselineAgentPathOverrides: Record<string, string> = {}
+let sessionBaselineSkillsRoot = ''
+
+function normalizeComparablePath(value?: string) {
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
+
+function overridesEqual(a: Record<string, string>, b: Record<string, string>) {
+  const ak = Object.keys(a).sort()
+  const bk = Object.keys(b).sort()
+  if (ak.length !== bk.length) return false
+  return ak.every((k) => normalizeComparablePath(a[k]) === normalizeComparablePath(b[k]))
+}
+
+function computeRestartRequired(agentPathOverrides: Record<string, string>, skillsRootPath: string) {
+  return (
+    !overridesEqual(agentPathOverrides, sessionBaselineAgentPathOverrides) ||
+    normalizeComparablePath(skillsRootPath) !== normalizeComparablePath(sessionBaselineSkillsRoot)
+  )
+}
+
 async function confirmDialog(opts: { title: string; message: string; detail?: string }) {
   if (window.skillMesh?.dialog?.confirm) {
     return window.skillMesh.dialog.confirm(opts)
@@ -68,6 +94,13 @@ interface AppState {
   highlightTaskId: string | null
   storageUsedGb: number
   storageTotalGb: number
+  storageFreeGb: number
+  storageSkillsUsedGb: number
+  storageVolumeLabel: string
+  storagePath: string | null
+  logsDirDisplay: string | null
+  logsTodayFileDisplay: string | null
+  logsRetainDays: number
   syncServiceRunning: boolean
   theme: AppTheme
   newSkillsFolder: string
@@ -77,6 +110,8 @@ interface AppState {
   catalogSyncMessage: string | null
   lastCatalogSyncedAt: string | null
   defaultSyncAgentIds: string[]
+  /** Current / pending local skills repository root (display path). */
+  skillsRootPath: string
   toast: ToastItem | null
   account: AppAccount
   discoveredHub: DiscoveredHub | null
@@ -121,6 +156,8 @@ interface AppState {
   updateAll: () => void
   deleteSkill: (uid: string) => Promise<void>
   toggleAgentSync: (skillUid: string, agentId: string) => void
+  /** Re-copy installed skill into one already-synced agent (or all synced agents). */
+  resyncSkill: (skillUid: string, agentId?: string) => void
   importLocalSkill: (filePath?: string | null) => void
   createSkill: (payload: { name: string; description?: string; content: string }) => void
   setNewSkillsFolder: (folder: string) => void
@@ -137,7 +174,13 @@ interface AppState {
   scanAgents: () => Promise<void>
   setAgents: (agents: AgentInstallation[]) => void
   saveAgentPathOverrides: (overrides: Record<string, string>) => Promise<'relaunch' | 'later' | 'cancel'>
+  /** Validate and save one agent path override. Rejects illegal paths. */
+  saveAgentPathOverride: (
+    agentId: string,
+    pathValue: string,
+  ) => Promise<{ ok: boolean; message?: string; choice?: 'relaunch' | 'later' | 'cancel' }>
   applyAgentPathOverrides: (agents: AgentInstallation[]) => AgentInstallation[]
+  validateAgentSkillPath: (pathValue: string) => Promise<{ ok: boolean; error?: string; path?: string; displayPath?: string }>
   submitPublish: (payload: {
     skillUid: string
     namespace: string
@@ -158,8 +201,16 @@ interface AppState {
   setTheme: (theme: AppTheme) => void
   setSyncServiceRunning: (running: boolean) => void
   clearStorageCache: () => void
+  refreshStorageStats: () => Promise<void>
+  refreshLogsInfo: () => Promise<void>
+  openLogsDirectory: () => Promise<void>
   openSkillDirectory: (skillUid: string) => Promise<void>
   goDiscoverUpdates: () => void
+  /** Validate + save local skills repository root (restart required). */
+  saveSkillsRootPath: (
+    pathValue: string,
+  ) => Promise<{ ok: boolean; message?: string; choice?: 'relaunch' | 'later' | 'cancel' }>
+  refreshSkillsRootPath: () => Promise<void>
 }
 
 function normalizeSourceUrl(url?: string) {
@@ -237,11 +288,11 @@ function installedStubsFromPersisted(persisted: PersistedUiState | null): Skill[
       return {
         uid: skillUid,
         sourceId,
-        sourceName: sourceId,
-        namespace,
-        skillId,
-        name: skillId,
-        description: '',
+        sourceName: override.sourceName || sourceId,
+        namespace: override.namespace || namespace,
+        skillId: override.skillId || skillId,
+        name: override.name || skillId,
+        description: override.description || '',
         version,
         latestVersion,
         author: '',
@@ -257,6 +308,11 @@ function installedStubsFromPersisted(persisted: PersistedUiState | null): Skill[
         syncedAgents: persisted.syncedAgents?.[skillUid] ?? [],
         localPath: override.localPath,
         origin: override.origin,
+        homepageUrl: override.homepageUrl,
+        githubUrl: override.githubUrl,
+        packageSource: override.packageSource,
+        contentHash: override.contentHash,
+        contentSource: override.contentSource,
       } satisfies Skill
     })
 }
@@ -287,6 +343,7 @@ const TASK_KIND_LABEL: Record<TaskKind, string> = {
 }
 
 const DEFAULT_NEW_SKILLS_FOLDER = '~/new_skills'
+const DEFAULT_SKILLS_ROOT = '~/.skillmesh'
 
 const APP_THEMES: AppTheme[] = [
   'system',
@@ -351,8 +408,32 @@ function buildTaskMeta(
   }
 }
 
-async function ensureSkillPackageOnDisk(skill: Skill): Promise<string | undefined> {
+async function ensureSkillPackageOnDisk(
+  skill: Skill,
+  options?: { forceFetch?: boolean },
+): Promise<{ localPath?: string; contentHash?: string; contentSource?: string }> {
   if (window.skillMesh?.skills?.ensurePackage) {
+    const source = useAppStore.getState().sources.find((s) => s.id === skill.sourceId)
+    let packageSource = skill.packageSource
+    if (
+      source?.registryUrl &&
+      (!packageSource?.baseUrl) &&
+      (packageSource?.kind === 'skillhub' ||
+        !packageSource ||
+        source.type === 'custom' ||
+        skill.sourceId === 'panguhub' ||
+        skill.sourceId === 'xfyun-skillhub')
+    ) {
+      packageSource = {
+        kind: 'skillhub',
+        ...packageSource,
+        baseUrl: source.registryUrl,
+        namespace: packageSource?.namespace || skill.namespace,
+        slug: packageSource?.slug || skill.skillId,
+        version: packageSource?.version || skill.latestVersion || skill.version,
+      }
+    }
+    const local = skill.origin === 'created' || skill.origin === 'imported' || skill.sourceId === 'local'
     const result = await window.skillMesh.skills.ensurePackage({
       skillId: skill.skillId,
       name: skill.name,
@@ -363,13 +444,77 @@ async function ensureSkillPackageOnDisk(skill: Skill): Promise<string | undefine
       namespace: skill.namespace,
       latestVersion: skill.latestVersion,
       localPath: skill.localPath,
-      content: skill.content,
+      // Catalog installs must download real body — never seed with list-API 简介
+      content: local ? skill.content : undefined,
+      homepageUrl: skill.homepageUrl,
+      githubUrl: skill.githubUrl,
+      packageSource,
+      registryUrl: source?.registryUrl,
+      token: source?.token,
+      origin: skill.origin,
+      forceFetch: options?.forceFetch ?? !local,
+      contentHash: skill.contentHash,
     })
-    return result.localPath
+    if (!result.ok) {
+      throw new Error(result.error || 'Skill 包下载失败')
+    }
+    return {
+      localPath: result.localPath,
+      contentHash: result.contentHash,
+      contentSource: result.contentSource,
+    }
   }
-  if (skill.localPath) return skill.localPath
+  if (skill.localPath) return { localPath: skill.localPath, contentHash: skill.contentHash }
   const version = skill.latestVersion || skill.version
-  return `~/.skillmesh/skills/${skill.sourceId}/${skill.namespace || 'default'}/${skill.skillId}/${version}`
+  const root = (useAppStore.getState().skillsRootPath || DEFAULT_SKILLS_ROOT).replace(/\/$/, '')
+  return {
+    localPath: `${root}/skills/${skill.sourceId}/${skill.namespace || 'default'}/${skill.skillId}/${version}`,
+  }
+}
+
+/** Drop installed flags when local package was deleted / is stub-only / hash mismatch. */
+async function reconcileInstalledSkills(skills: Skill[]): Promise<Skill[]> {
+  const api = window.skillMesh?.skills?.verifyPackages
+  if (!api) return skills
+  const targets = skills.filter((s) => s.installed && s.localPath)
+  if (!targets.length) return skills
+  try {
+    const res = await api(
+      targets.map((s) => ({
+        uid: s.uid,
+        localPath: s.localPath,
+        contentHash: s.contentHash,
+        name: s.name,
+        description: s.description,
+        version: s.version,
+        sourceId: s.sourceId,
+        sourceName: s.sourceName,
+      })),
+    )
+    const results = res?.results || {}
+    return skills.map((skill) => {
+      if (!skill.installed || !skill.localPath) return skill
+      const verified = results[skill.uid]
+      if (!verified) return skill
+      if (verified.ok) {
+        return {
+          ...skill,
+          contentHash: verified.contentHash || skill.contentHash,
+        }
+      }
+      return {
+        ...skill,
+        installed: false,
+        updateAvailable: false,
+        localPath: undefined,
+        contentHash: undefined,
+        contentSource: undefined,
+        syncedAgents: [],
+      }
+    })
+  } catch {
+    return skills
+  }
 }
 
 function isLocalMineSkill(skill: Skill) {
@@ -468,7 +613,7 @@ function formatSyncTime(iso?: string | null) {
 
 function createTask(partial: Omit<TaskItem, 'id' | 'createdAt' | 'updatedAt' | 'status'> & { status?: TaskItem['status'] }): TaskItem {
   const now = new Date().toISOString()
-  return {
+  const task: TaskItem = {
     id: uid('task'),
     status: partial.status ?? 'pending',
     createdAt: now,
@@ -476,6 +621,18 @@ function createTask(partial: Omit<TaskItem, 'id' | 'createdAt' | 'updatedAt' | '
     progress: partial.progress ?? 0,
     ...partial,
   }
+  void window.skillMesh?.logs?.append?.({
+    level: 'info',
+    message: `[task] ${task.kind} · ${task.status} · ${task.title}${task.subtitle ? ` · ${task.subtitle}` : ''}`,
+    meta: {
+      id: task.id,
+      skillUid: task.skillUid,
+      agentId: task.agentId,
+      skillName: task.skillName,
+      sourceName: task.sourceName,
+    },
+  })
+  return task
 }
 
 async function runProgress(
@@ -530,7 +687,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   notifications: [],
   highlightTaskId: null,
   storageUsedGb: 0,
-  storageTotalGb: 100,
+  storageTotalGb: 0,
+  storageFreeGb: 0,
+  storageSkillsUsedGb: 0,
+  storageVolumeLabel: '',
+  storagePath: null,
+  logsDirDisplay: null,
+  logsTodayFileDisplay: null,
+  logsRetainDays: 7,
   syncServiceRunning: true,
   theme: 'dark',
   newSkillsFolder: DEFAULT_NEW_SKILLS_FOLDER,
@@ -540,6 +704,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   catalogSyncMessage: null,
   lastCatalogSyncedAt: null,
   defaultSyncAgentIds: [],
+  skillsRootPath: DEFAULT_SKILLS_ROOT,
   toast: null,
   account: { loggedIn: false, hubBaseUrl: DEFAULT_PANGU_HUB_URL },
   discoveredHub: null,
@@ -561,6 +726,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const ownedUids = new Set(owned.map((s) => s.uid))
     const mergedSkills = [...owned, ...installedStubs.filter((s) => !ownedUids.has(s.uid))]
     const overrides = persisted?.agentPathOverrides ?? {}
+    sessionBaselineAgentPathOverrides = { ...overrides }
     const agents = DEFAULT_AGENTS.map((agent) => {
       const defaultSkillPath = agent.defaultSkillPath || agent.skillPath
       return {
@@ -720,16 +886,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
       discoveredHub: null,
       defaultSyncAgentIds: persisted?.defaultSyncAgentIds ?? [],
+      skillsRootPath: (() => {
+        const root = persisted?.skillsRootPath || DEFAULT_SKILLS_ROOT
+        sessionBaselineSkillsRoot = root
+        return root
+      })(),
       lastCatalogSyncedAt: persisted?.lastCatalogSyncedAt ?? null,
       catalogSyncMessage: persisted?.lastCatalogSyncedAt
         ? `列表缓存 · 上次刷新 ${formatSyncTime(persisted.lastCatalogSyncedAt)}`
         : null,
     })
 
-    void get().ensureCatalogFresh().catch(() => undefined)
     if (accountHint?.loggedIn) {
       void get().refreshAccount()
     }
+    void (async () => {
+      const reconciled = await reconcileInstalledSkills(get().skills)
+      set({ skills: reconciled })
+      get().persist()
+    })().catch(() => undefined)
+    void get().refreshSkillsRootPath().catch(() => undefined)
+    void get().refreshStorageStats().catch(() => undefined)
+    void get().refreshLogsInfo().catch(() => undefined)
   },
 
   setLoginOpen: (open) => set({ loginOpen: open }),
@@ -1009,7 +1187,17 @@ export const useAppStore = create<AppState>((set, get) => ({
             latestVersion: skill.latestVersion,
             updateAvailable: skill.updateAvailable,
             localPath: skill.localPath,
+            contentHash: skill.contentHash,
+            contentSource: skill.contentSource,
             origin: skill.origin,
+            homepageUrl: skill.homepageUrl,
+            githubUrl: skill.githubUrl,
+            packageSource: skill.packageSource,
+            name: skill.name,
+            description: skill.description,
+            sourceName: skill.sourceName,
+            namespace: skill.namespace,
+            skillId: skill.skillId,
           },
         ]),
       ),
@@ -1031,6 +1219,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         email: s.account.email,
       },
       defaultSyncAgentIds: s.defaultSyncAgentIds,
+      skillsRootPath: s.skillsRootPath,
       lastCatalogSyncedAt: s.lastCatalogSyncedAt ?? undefined,
     }
     void savePersistedState(payload)
@@ -1115,12 +1304,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       kind: 'install',
       status: 'running',
       skillUid,
-      progress: 0,
+      progress: 8,
     })
     set((s) => ({ tasks: [task, ...s.tasks] }))
-    void runProgress(get, set, task.id, () => {
-      void (async () => {
-        const localPath = await ensureSkillPackageOnDisk(skill)
+    void (async () => {
+      try {
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  ...buildTaskMeta('install', { skill, phase: '正在拉取完整 Skill 内容' }),
+                  progress: 35,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        const packed = await ensureSkillPackageOnDisk(skill, { forceFetch: true })
+        const localPath = packed.localPath
         set((s) => ({
           skills: s.skills.map((item) =>
             item.uid === skillUid
@@ -1130,6 +1332,9 @@ export const useAppStore = create<AppState>((set, get) => ({
                   updateAvailable: false,
                   version: item.latestVersion || item.version,
                   localPath,
+                  contentHash: packed.contentHash,
+                  contentSource: packed.contentSource,
+                  content: undefined,
                 }
               : item,
           ),
@@ -1149,8 +1354,26 @@ export const useAppStore = create<AppState>((set, get) => ({
         const linkNote = linked.length ? `，已同步到 ${linked.join('、')}` : ''
         get().pushNotification(`${skill.name} 安装完成${linkNote}`, task.id, 'success')
         get().persist()
-      })()
-    })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '安装失败'
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  status: 'failed',
+                  error: message,
+                  progress: t.progress ?? 35,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        get().pushNotification(`${skill.name} 安装失败：${message}`, task.id, 'error')
+        get().showToast(`${skill.name} 安装失败：${message}`, 'error')
+        get().persist()
+      }
+    })()
   },
 
   updateSkill: (skillUid) => {
@@ -1162,14 +1385,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       kind: 'update',
       status: 'running',
       skillUid,
-      progress: 0,
+      progress: 8,
     })
     set((s) => ({ tasks: [task, ...s.tasks] }))
-    void runProgress(get, set, task.id, () => {
-      void (async () => {
+    void (async () => {
+      try {
         const nextVersion = skill.latestVersion || skill.version
         const nextSkill = { ...skill, version: nextVersion, updateAvailable: false }
-        const localPath = await ensureSkillPackageOnDisk(nextSkill)
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  ...buildTaskMeta('update', { skill: nextSkill, phase: '正在拉取完整 Skill 内容' }),
+                  progress: 40,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        const packed = await ensureSkillPackageOnDisk(nextSkill, { forceFetch: true })
+        const localPath = packed.localPath
         set((s) => ({
           skills: s.skills.map((item) =>
             item.uid === skillUid
@@ -1178,6 +1414,9 @@ export const useAppStore = create<AppState>((set, get) => ({
                   version: nextVersion,
                   updateAvailable: false,
                   localPath,
+                  contentHash: packed.contentHash,
+                  contentSource: packed.contentSource,
+                  content: undefined,
                 }
               : item,
           ),
@@ -1207,8 +1446,25 @@ export const useAppStore = create<AppState>((set, get) => ({
         }))
         get().pushNotification(`${skill.name} 已更新到 v${nextVersion}${linkNote}`, task.id, 'success')
         get().persist()
-      })()
-    })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '更新失败'
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  status: 'failed',
+                  error: message,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        get().pushNotification(`${skill.name} 更新失败：${message}`, task.id, 'error')
+        get().showToast(`${skill.name} 更新失败：${message}`, 'error')
+        get().persist()
+      }
+    })()
   },
 
   updateAll: () => {
@@ -1259,7 +1515,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         set((s) => ({
           skills: s.skills.map((item) =>
             item.uid === skillUid
-              ? { ...item, installed: false, updateAvailable: false, syncedAgents: [], localPath: undefined }
+              ? {
+                  ...item,
+                  installed: false,
+                  updateAvailable: false,
+                  syncedAgents: [],
+                  localPath: undefined,
+                  contentHash: undefined,
+                  contentSource: undefined,
+                }
               : item,
           ),
           tasks: s.tasks.map((t) =>
@@ -1315,11 +1579,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       void runProgress(get, set, task.id, () => {
         void (async () => {
           if (!skill.localPath) {
-            const localPath = await ensureSkillPackageOnDisk(skill)
+            const packed = await ensureSkillPackageOnDisk(skill, { forceFetch: true })
+            const localPath = packed.localPath
             set((s) => ({
-              skills: s.skills.map((item) => (item.uid === skillUid ? { ...item, localPath } : item)),
+              skills: s.skills.map((item) =>
+                item.uid === skillUid
+                  ? { ...item, localPath, contentHash: packed.contentHash, contentSource: packed.contentSource }
+                  : item,
+              ),
             }))
             skill.localPath = localPath
+            skill.contentHash = packed.contentHash
           }
 
           const syncResult = await syncSkillToAgent(skill, agent, enabling ? 'link' : 'unlink')
@@ -1381,6 +1651,115 @@ export const useAppStore = create<AppState>((set, get) => ({
     })()
   },
 
+  resyncSkill: (skillUid, agentId) => {
+    void (async () => {
+      const skill = get().skills.find((x) => x.uid === skillUid)
+      if (!skill?.installed) {
+        get().showToast('请先安装 Skill', 'warning')
+        return
+      }
+      const targets = agentId
+        ? get().agents.filter((a) => a.id === agentId && a.installed)
+        : get().agents.filter((a) => a.installed && skill.syncedAgents.includes(a.id))
+      if (!targets.length) {
+        get().showToast(agentId ? '未找到可同步的智能体' : '当前没有已同步的智能体，请先开启同步', 'warning')
+        return
+      }
+
+      for (const agent of targets) {
+        if (!agent.skillPath) continue
+        if (get().isAgentSyncBusy(skillUid, agent.id)) continue
+
+        const meta = buildTaskMeta('sync', { skill, agent, phase: '正在重新同步到智能体' })
+        const task = createTask({
+          ...meta,
+          kind: 'sync',
+          status: 'running',
+          skillUid,
+          agentId: agent.id,
+          progress: 8,
+        })
+        set((s) => ({ tasks: [task, ...s.tasks] }))
+
+        try {
+          let working = skill
+          if (!working.localPath) {
+            const packed = await ensureSkillPackageOnDisk(working, { forceFetch: true })
+            const localPath = packed.localPath
+            set((s) => ({
+              skills: s.skills.map((item) =>
+                item.uid === skillUid
+                  ? { ...item, localPath, contentHash: packed.contentHash, contentSource: packed.contentSource }
+                  : item,
+              ),
+            }))
+            working = {
+              ...working,
+              localPath,
+              contentHash: packed.contentHash,
+              contentSource: packed.contentSource,
+            }
+          }
+
+          const syncResult = await syncSkillToAgent(working, agent, 'link')
+          if (!syncResult?.ok) {
+            set((s) => ({
+              tasks: s.tasks.map((t) =>
+                t.id === task.id
+                  ? {
+                      ...t,
+                      status: 'failed',
+                      error: syncResult?.error || '重新同步失败',
+                      updatedAt: new Date().toISOString(),
+                    }
+                  : t,
+              ),
+            }))
+            get().pushNotification(`${skill.name} → ${agent.name} 同步失败`, task.id, 'error')
+            get().showToast(`${agent.name}：${syncResult?.error || '重新同步失败'}`, 'error')
+            get().persist()
+            continue
+          }
+
+          set((s) => ({
+            skills: s.skills.map((item) => {
+              if (item.uid !== skillUid) return item
+              return {
+                ...item,
+                syncedAgents: Array.from(new Set([...item.syncedAgents, agent.id])),
+                lastSyncedAt: new Date().toISOString(),
+              }
+            }),
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? {
+                    ...t,
+                    ...buildTaskMeta('sync', { skill: working, agent, phase: '重新同步完成' }),
+                    status: 'success',
+                    progress: 100,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : t,
+            ),
+          }))
+          get().pushNotification(`${skill.name} 已重新同步到 ${agent.name}`, task.id, 'success')
+          get().persist()
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '重新同步失败'
+          set((s) => ({
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? { ...t, status: 'failed', error: message, updatedAt: new Date().toISOString() }
+                : t,
+            ),
+          }))
+          get().showToast(`${agent.name}：${message}`, 'error')
+          get().persist()
+        }
+      }
+    })()
+  },
+
   createSkill: ({ name, description, content }) => {
     const trimmed = name.trim()
     if (!trimmed) return
@@ -1423,8 +1802,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ tasks: [task, ...s.tasks] }))
     void runProgress(get, set, task.id, () => {
       void (async () => {
-        const localPath = (await ensureSkillPackageOnDisk(skill)) || skill.localPath
+        const packed = await ensureSkillPackageOnDisk(skill)
+        const localPath = packed.localPath || skill.localPath
         skill.localPath = localPath
+        skill.contentHash = packed.contentHash
+        skill.contentSource = packed.contentSource
         set((s) => ({
           skills: [skill, ...s.skills],
           tasks: s.tasks.map((t) =>
@@ -1496,8 +1878,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           localPath: filePath || undefined,
           origin: 'imported',
         }
-        const localPath = await ensureSkillPackageOnDisk(skill)
-        skill.localPath = localPath || skill.localPath
+        const packed = await ensureSkillPackageOnDisk(skill)
+        skill.localPath = packed.localPath || skill.localPath
+        skill.contentHash = packed.contentHash
+        skill.contentSource = packed.contentSource
         set((s) => ({
           skills: [skill, ...s.skills],
           tasks: s.tasks.map((t) =>
@@ -1657,9 +2041,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { ok: true, message: '列表刷新进行中', skipped: true }
     }
     const last = get().lastCatalogSyncedAt
-    // First launch: do not auto-pull — user must click「刷新列表」
+    // Prefer cache until stale; Discover page auto-loads on every enter.
     if (!last) {
-      const message = '首次启动需手动刷新列表'
+      const message = '进入「发现」将自动拉取技能列表'
       set({ catalogSyncMessage: message })
       return { ok: true, message, skipped: true }
     }
@@ -1831,7 +2215,10 @@ export const useAppStore = create<AppState>((set, get) => ({
               syncedAgents: prev?.syncedAgents ?? [],
               lastSyncedAt: prev?.lastSyncedAt,
               localPath: prev?.localPath,
-              content: prev?.content,
+              contentHash: prev?.contentHash,
+              contentSource: prev?.contentSource,
+              // Do not carry stale inline 简介 into installs
+              content: undefined,
               version,
               latestVersion,
               updateAvailable: installed && !!latestVersion && version !== latestVersion,
@@ -1865,7 +2252,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const message = ok
         ? `已刷新 ${remoteBySource.size} 个源，共 ${totalSkills} 个 Skill${failed ? `（${failed} 个失败）` : ''}`
         : `列表刷新失败（${notes.join('，')}）`
+
+      // Verify local packages still exist / are not stubs — clear fake "已安装"
+      const reconciled = await reconcileInstalledSkills(get().skills)
       set({
+        skills: reconciled,
         catalogSyncing: false,
         catalogSyncMessage: message,
         lastCatalogSyncedAt: ok ? nowIso : get().lastCatalogSyncedAt,
@@ -1914,9 +2305,119 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setAgents: (agents) => set({ agents: get().applyAgentPathOverrides(agents) }),
 
-  saveAgentPathOverrides: async (overrides) => {
-    set({ agentPathOverrides: overrides, restartRequired: true })
+  validateAgentSkillPath: async (pathValue) => {
+    const raw = (pathValue || '').trim()
+    if (!raw) return { ok: false, error: '路径不能为空' }
+    const api = window.skillMesh?.agents?.validateSkillPath
+    if (api) return api({ path: raw })
+
+    // Browser fallback (no Electron IPC)
+    if (raw.includes('\0') || /[\r\n\t]/.test(raw)) {
+      return { ok: false, error: '路径包含非法字符' }
+    }
+    const looksHome = raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')
+    const looksAbs = /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(raw)
+    if (!looksHome && !looksAbs) {
+      return { ok: false, error: '请使用绝对路径或以 ~ 开头的路径' }
+    }
+    if (/[<>"|?*]/.test(raw.replace(/^[a-zA-Z]:/, ''))) {
+      return { ok: false, error: '路径包含非法字符（<>:"|?*）' }
+    }
+    return { ok: true, path: raw, displayPath: raw }
+  },
+
+  saveAgentPathOverride: async (agentId, pathValue) => {
+    const agent = get().agents.find((a) => a.id === agentId)
+    if (!agent) return { ok: false, message: '未找到该智能体' }
+
+    const raw = (pathValue || '').trim()
+    const def = (agent.defaultSkillPath || '').trim()
+    const current =
+      (get().agentPathOverrides[agentId] || agent.skillPath || agent.defaultSkillPath || '').trim()
+
+    const validated = await get().validateAgentSkillPath(raw)
+    if (!validated.ok) {
+      const message = validated.error || '路径不合法，无法保存'
+      get().showToast(message, 'error')
+      return { ok: false, message }
+    }
+
+    const toStore = validated.displayPath || validated.path || raw
+
+    // Unchanged vs current / default → no-op (no restart prompt)
+    const sameAsCurrent =
+      raw === current ||
+      toStore === current ||
+      (validated.path && current && validated.path.replace(/\\/g, '/').toLowerCase() === current.replace(/\\/g, '/').toLowerCase())
+    const sameAsDefault = def && (toStore === def || raw === def || validated.displayPath === def)
+    const hadOverride = Boolean(get().agentPathOverrides[agentId])
+    if (sameAsCurrent && !(sameAsDefault && hadOverride)) {
+      get().showToast('路径未更改', 'info')
+      return { ok: true, choice: 'cancel' }
+    }
+
+    const next = { ...get().agentPathOverrides }
+    if (sameAsDefault) {
+      delete next[agentId]
+    } else {
+      next[agentId] = toStore
+    }
+
+    const needsRestart = computeRestartRequired(next, get().skillsRootPath)
+    set({
+      agentPathOverrides: next,
+      restartRequired: needsRestart,
+      agents: get().applyAgentPathOverrides(get().agents),
+    })
     get().persist()
+
+    if (!needsRestart) {
+      get().showToast('路径已恢复为当前生效配置，无需重启', 'success')
+      return { ok: true, choice: 'cancel' }
+    }
+
+    const choice = window.skillMesh?.dialog.restartPrompt
+      ? await window.skillMesh.dialog.restartPrompt({
+          title: '路径已修改',
+          message: `${agent.name} 的 Skill 路径已保存，重启后生效。`,
+          detail: '可选择立即重启，或稍后手动重启应用。',
+        })
+      : window.confirm(`${agent.name} 路径已保存，是否立即重启？`)
+        ? 'relaunch'
+        : 'later'
+    if (choice === 'relaunch') {
+      await window.skillMesh?.app?.relaunch()
+    }
+    return { ok: true, choice }
+  },
+
+  saveAgentPathOverrides: async (overrides) => {
+    const agents = get().agents
+    const cleaned: Record<string, string> = {}
+    for (const [agentId, value] of Object.entries(overrides)) {
+      const raw = (value || '').trim()
+      if (!raw) continue
+      const agent = agents.find((a) => a.id === agentId)
+      const def = (agent?.defaultSkillPath || '').trim()
+      const validated = await get().validateAgentSkillPath(raw)
+      if (!validated.ok) {
+        get().showToast(`${agent?.name || agentId}：${validated.error || '路径不合法'}`, 'error')
+        return 'cancel'
+      }
+      const toStore = validated.displayPath || validated.path || raw
+      if (!def || (toStore !== def && raw !== def)) cleaned[agentId] = toStore
+    }
+    const needsRestart = computeRestartRequired(cleaned, get().skillsRootPath)
+    set({
+      agentPathOverrides: cleaned,
+      restartRequired: needsRestart,
+      agents: get().applyAgentPathOverrides(get().agents.map((a) => ({ ...a }))),
+    })
+    get().persist()
+    if (!needsRestart) {
+      get().showToast('路径未相对当前生效配置变化，无需重启', 'info')
+      return 'cancel'
+    }
     const choice = window.skillMesh?.dialog.restartPrompt
       ? await window.skillMesh.dialog.restartPrompt({
           title: '路径已修改',
@@ -2332,6 +2833,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setPublishFilter: (f) => set({ publishFilter: f }),
   pushNotification: (msg, taskId, tone = 'info') => {
+    void window.skillMesh?.logs?.append?.({
+      level: tone === 'error' ? 'error' : tone === 'warning' ? 'warn' : 'info',
+      message: `[notify] ${msg}`,
+      meta: taskId ? { taskId } : undefined,
+    })
     set((s) => ({
       notifications: [
         {
@@ -2372,10 +2878,148 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().persist()
   },
   clearStorageCache: () => {
-    set({ storageUsedGb: 0 })
-    get().showToast('已清理缓存与临时日志', 'success')
-    get().persist()
+    void (async () => {
+      try {
+        const purged = await window.skillMesh?.logs?.purge?.()
+        const removed = purged?.removed?.length || 0
+        await get().refreshStorageStats()
+        get().showToast(
+          removed ? `已清理 ${removed} 个过期日志文件` : '已清理缓存（无过期日志）',
+          'success',
+        )
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '清理失败'
+        get().showToast(/No handler registered/i.test(message) ? '请完全重启应用后再试' : message, 'error')
+      }
+    })()
   },
+
+  refreshStorageStats: async () => {
+    const api = window.skillMesh?.app?.getDiskSpace
+    if (!api) {
+      set({
+        storageUsedGb: 0,
+        storageTotalGb: 0,
+        storageFreeGb: 0,
+        storageSkillsUsedGb: 0,
+        storageVolumeLabel: '',
+        storagePath: null,
+      })
+      return
+    }
+    try {
+      const res = await api({ path: get().skillsRootPath })
+      if (!res?.ok) return
+      set({
+        storageUsedGb: res.usedGb ?? 0,
+        storageTotalGb: res.totalGb ?? 0,
+        storageFreeGb: res.freeGb ?? 0,
+        storageSkillsUsedGb: res.skillsUsedGb ?? 0,
+        storageVolumeLabel: res.volumeLabel || '',
+        storagePath: res.path || null,
+      })
+    } catch {
+      // Main process may be stale until full Electron restart
+      set({
+        storageUsedGb: 0,
+        storageTotalGb: 0,
+        storageFreeGb: 0,
+        storageSkillsUsedGb: 0,
+        storageVolumeLabel: '',
+        storagePath: null,
+      })
+    }
+  },
+
+  refreshLogsInfo: async () => {
+    const api = window.skillMesh?.logs?.getInfo
+    if (!api) return
+    try {
+      const res = await api()
+      if (!res?.ok) return
+      set({
+        logsDirDisplay: res.logsDirDisplay || res.logsDir || null,
+        logsTodayFileDisplay: res.todayFileDisplay || res.todayFile || null,
+        logsRetainDays: res.retainDays || 7,
+      })
+    } catch {
+      // ignore until main process restarts with log IPC
+    }
+  },
+
+  openLogsDirectory: async () => {
+    const api = window.skillMesh?.logs?.openDir
+    if (!api) {
+      get().showToast('当前环境不支持打开日志目录', 'warning')
+      return
+    }
+    try {
+      const res = await api()
+      if (!res.ok) get().showToast(res.error || '打开日志目录失败', 'error')
+      else await get().refreshLogsInfo()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '打开日志目录失败'
+      get().showToast(/No handler registered/i.test(message) ? '请完全重启应用后再试' : message, 'error')
+    }
+  },
+
+  refreshSkillsRootPath: async () => {
+    const api = window.skillMesh?.app?.getPaths
+    if (!api) return
+    const res = await api()
+    if (!res?.ok) return
+    const display = res.skillsRootDisplay || res.skillsRoot || DEFAULT_SKILLS_ROOT
+    set({ skillsRootPath: display })
+    get().persist()
+    void get().refreshStorageStats()
+  },
+
+  saveSkillsRootPath: async (pathValue) => {
+    const raw = (pathValue || '').trim()
+    const validated = await get().validateAgentSkillPath(raw)
+    if (!validated.ok) {
+      const message = validated.error || '路径不合法，无法保存'
+      get().showToast(message, 'error')
+      return { ok: false, message }
+    }
+
+    const display = validated.displayPath || validated.path || raw
+    const api = window.skillMesh?.app?.setSkillsRoot
+    if (api) {
+      const result = await api({ path: display })
+      if (!result.ok) {
+        const message = result.error || '保存失败'
+        get().showToast(message, 'error')
+        return { ok: false, message }
+      }
+    }
+
+    set({
+      skillsRootPath: display,
+      restartRequired: computeRestartRequired(get().agentPathOverrides, display),
+    })
+    get().persist()
+
+    if (!computeRestartRequired(get().agentPathOverrides, display)) {
+      get().showToast('仓库路径已恢复为当前生效配置，无需重启', 'success')
+      return { ok: true, choice: 'cancel' }
+    }
+
+    const choice = window.skillMesh?.dialog.restartPrompt
+      ? await window.skillMesh.dialog.restartPrompt({
+          title: '本地仓库路径已修改',
+          message: '新路径已保存，重启后生效。',
+          detail: '已安装 Skill 不会自动迁移；重启后新安装将写入新仓库。',
+        })
+      : window.confirm('本地仓库路径已保存，是否立即重启？')
+        ? 'relaunch'
+        : 'later'
+    if (choice === 'relaunch') {
+      await window.skillMesh?.app?.relaunch()
+    }
+    return { ok: true, choice }
+  },
+
   goDiscoverUpdates: () => {
     set({
       statusFilter: 'update_available',

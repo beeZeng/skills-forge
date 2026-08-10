@@ -36,11 +36,11 @@ export function DiscoverPage() {
   const updateSelected = useAppStore((s) => s.updateSelected)
   const clearSelection = useAppStore((s) => s.clearSelection)
   const refreshCatalog = useAppStore((s) => s.refreshCatalog)
-  const ensureCatalogFresh = useAppStore((s) => s.ensureCatalogFresh)
   const resetDiscoverFilters = useAppStore((s) => s.resetDiscoverFilters)
   const catalogSyncing = useAppStore((s) => s.catalogSyncing)
   const catalogSyncMessage = useAppStore((s) => s.catalogSyncMessage)
   const lastCatalogSyncedAt = useAppStore((s) => s.lastCatalogSyncedAt)
+  const hydrated = useAppStore((s) => s.hydrated)
   const updateCount = useAppStore((s) => s.skills.reduce((n, x) => n + (x.updateAvailable ? 1 : 0), 0))
   const enabledSources = sources.filter((s) => s.id !== 'local' && s.enabled)
   const connectedSources = enabledSources.filter((s) => s.status === 'connected')
@@ -49,10 +49,11 @@ export function DiscoverPage() {
     if ((discoverTab as string) === 'import') setDiscoverTab('recommended')
   }, [discoverTab, setDiscoverTab])
 
+  // Every time Discover mounts (including switching back from other modules), refresh catalog.
   useEffect(() => {
-    // Prefer cache; only refresh when stale (or never refreshed)
-    void ensureCatalogFresh().catch(() => undefined)
-  }, [ensureCatalogFresh])
+    if (!hydrated) return
+    void refreshCatalog({ force: true }).catch(() => undefined)
+  }, [hydrated, refreshCatalog])
 
   const neverSynced = !lastCatalogSyncedAt
   const emptyHint = (() => {
@@ -63,10 +64,10 @@ export function DiscoverPage() {
         cta: { to: '/settings/sources', label: '去技能源配置' },
       }
     }
-    if (neverSynced) {
+    if (neverSynced && !catalogSyncing) {
       return {
         title: '尚未拉取技能列表',
-        desc: '首次启动不会自动拉取。请点击「刷新列表」，从已启用的技能源同步 Skill。',
+        desc: '请点击「刷新列表」，从已启用的技能源同步 Skill。',
         cta: null,
       }
     }
@@ -92,7 +93,19 @@ export function DiscoverPage() {
   })()
 
   return (
-    <div className="mx-auto max-w-[1200px] space-y-4">
+    <div className="relative mx-auto min-h-[calc(100vh-7rem)] max-w-[1200px] space-y-4">
+      {catalogSyncing ? (
+        <div className="absolute inset-0 z-30 flex items-center justify-center rounded-mesh bg-mesh-bg/70 backdrop-blur-[2px]">
+          <div className="flex flex-col items-center gap-3 rounded-mesh border border-mesh-border bg-mesh-panel px-8 py-6 shadow-mesh">
+            <Loader2 className="h-8 w-8 animate-spin text-mesh-accent" />
+            <div className="text-sm font-medium text-mesh-text">
+              {catalogSyncMessage || '正在加载技能列表…'}
+            </div>
+            <p className="text-xs text-mesh-dim">请稍候，加载完成前页面暂不可操作</p>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">发现</h1>
@@ -120,15 +133,6 @@ export function DiscoverPage() {
       </div>
 
       <CatalogSyncBar active={catalogSyncing} message={catalogSyncMessage} />
-
-      {neverSynced && !catalogSyncing ? (
-        <div className="rounded-mesh border border-mesh-accent/35 bg-mesh-accentSoft/40 px-4 py-3 text-sm">
-          <div className="font-medium text-mesh-text">首次启动需手动刷新列表</div>
-          <p className="mt-1 text-xs text-mesh-dim">
-            首次使用不会自动拉取技能。请点击右上角「刷新列表」，从已启用的技能源同步 Skill 后再浏览与安装。
-          </p>
-        </div>
-      ) : null}
 
       <div
         className={cn(
@@ -233,14 +237,6 @@ export function DiscoverPage() {
       ) : null}
 
       <div className="relative">
-        {catalogSyncing ? (
-          <div className="absolute inset-0 z-10 flex items-start justify-center rounded-mesh bg-mesh-bg/55 pt-16 backdrop-blur-[1px]">
-            <div className="inline-flex items-center gap-2 rounded-mesh border border-mesh-border bg-mesh-panel px-4 py-2 text-sm text-mesh-muted shadow-mesh">
-              <Loader2 className="h-4 w-4 animate-spin text-mesh-accent" />
-              正在加载技能列表…
-            </div>
-          </div>
-        ) : null}
         <div
           className={cn(
             'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3',

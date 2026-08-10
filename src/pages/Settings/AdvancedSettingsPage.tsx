@@ -62,8 +62,6 @@ const THEMES: Array<{ id: AppTheme; label: string; desc: string; swatch: string;
 type AppPaths = {
   dataRoot?: string
   dataRootDisplay?: string
-  skillsRoot?: string
-  skillsRootDisplay?: string
 }
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -78,7 +76,7 @@ export function AdvancedSettingsPage() {
   const showToast = useAppStore((s) => s.showToast)
 
   const [paths, setPaths] = useState<AppPaths | null>(null)
-  const [busy, setBusy] = useState<'data' | 'skills' | 'relaunch' | 'copy' | null>(null)
+  const [busy, setBusy] = useState<'data' | 'relaunch' | 'copy' | null>(null)
 
   const desktop = !!window.skillMesh
   const versions = window.skillMesh?.versions
@@ -93,13 +91,13 @@ export function AdvancedSettingsPage() {
     })
   }, [])
 
-  const openDir = async (kind: 'data' | 'skills') => {
-    const target = kind === 'data' ? paths?.dataRoot : paths?.skillsRoot
+  const openDataDir = async () => {
+    const target = paths?.dataRoot
     if (!target || !window.skillMesh?.shell?.openPath) {
       showToast('无法打开目录', 'warning')
       return
     }
-    setBusy(kind)
+    setBusy('data')
     try {
       const result = await window.skillMesh.shell.openPath(target)
       if (!result.ok) showToast(result.error || '打开失败', 'error')
@@ -147,7 +145,7 @@ export function AdvancedSettingsPage() {
     <div className="mx-auto max-w-[760px] space-y-4">
       <div>
         <h1 className="text-xl font-semibold">高级设置</h1>
-        <p className="mt-1 text-sm text-mesh-dim">主题与本地数据位置</p>
+        <p className="mt-1 text-sm text-mesh-dim">主题与应用配置目录</p>
       </div>
 
       <section className="space-y-3 rounded-mesh border border-mesh-border bg-mesh-card p-4">
@@ -190,9 +188,9 @@ export function AdvancedSettingsPage() {
 
       <section className="space-y-3 rounded-mesh border border-mesh-border bg-mesh-card p-4">
         <div>
-          <h2 className="text-sm font-medium">本地数据</h2>
+          <h2 className="text-sm font-medium">配置目录</h2>
           <p className="mt-1 text-xs text-mesh-dim">
-            登录配置与界面状态、已安装 Skill 文件分别存放在这两处，排障或备份时可直接打开
+            存放账号会话、技能源、主题等界面状态。Skill 文件仓库请到「存储管理」修改。
           </p>
         </div>
 
@@ -200,26 +198,35 @@ export function AdvancedSettingsPage() {
           <p className="text-xs text-mesh-dim">浏览器预览看不到本机路径，请使用桌面客户端。</p>
         ) : (
           <div className="space-y-3">
-            <PathCard
-              title="配置目录"
-              hint="账号会话、技能源、主题等界面状态"
-              path={paths?.dataRootDisplay}
-              absolutePath={paths?.dataRoot}
-              busy={busy}
-              onOpen={() => void openDir('data')}
-              onCopy={() => void copyPath(paths?.dataRoot || paths?.dataRootDisplay)}
-              openKey="data"
-            />
-            <PathCard
-              title="Skill 仓库"
-              hint="本机安装 / 新建 / 导入的 Skill 文件"
-              path={paths?.skillsRootDisplay}
-              absolutePath={paths?.skillsRoot}
-              busy={busy}
-              onOpen={() => void openDir('skills')}
-              onCopy={() => void copyPath(paths?.skillsRoot || paths?.skillsRootDisplay)}
-              openKey="skills"
-            />
+            <div className="rounded-mesh border border-mesh-border bg-mesh-panel/60 px-3 py-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">应用配置</div>
+                  <div className="mt-0.5 text-xs text-mesh-dim">账号会话、技能源、主题等</div>
+                  <div className="mt-1.5 break-all font-mono text-xs text-mesh-muted">
+                    {paths?.dataRootDisplay || (paths?.dataRoot ? '…' : '读取中…')}
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <button
+                    type="button"
+                    disabled={!paths?.dataRootDisplay || busy !== null}
+                    onClick={() => void copyPath(paths?.dataRoot || paths?.dataRootDisplay)}
+                    className="rounded-md border border-mesh-border px-2.5 py-1 text-xs hover:bg-mesh-card disabled:opacity-50"
+                  >
+                    复制
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!paths?.dataRoot || busy !== null}
+                    onClick={() => void openDataDir()}
+                    className="rounded-md border border-mesh-border px-2.5 py-1 text-xs hover:bg-mesh-card disabled:opacity-50"
+                  >
+                    {busy === 'data' ? '打开中…' : '打开'}
+                  </button>
+                </div>
+              </div>
+            </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-mesh-border pt-3 text-xs text-mesh-dim">
               <span>
@@ -238,58 +245,6 @@ export function AdvancedSettingsPage() {
           </div>
         )}
       </section>
-    </div>
-  )
-}
-
-function PathCard({
-  title,
-  hint,
-  path,
-  absolutePath,
-  busy,
-  onOpen,
-  onCopy,
-  openKey,
-}: {
-  title: string
-  hint: string
-  path?: string
-  absolutePath?: string
-  busy: 'data' | 'skills' | 'relaunch' | 'copy' | null
-  onOpen: () => void
-  onCopy: () => void
-  openKey: 'data' | 'skills'
-}) {
-  return (
-    <div className="rounded-mesh border border-mesh-border bg-mesh-panel/60 px-3 py-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-sm font-medium">{title}</div>
-          <div className="mt-0.5 text-xs text-mesh-dim">{hint}</div>
-          <div className="mt-1.5 break-all font-mono text-xs text-mesh-muted">
-            {path || (absolutePath ? '…' : '读取中…')}
-          </div>
-        </div>
-        <div className="flex shrink-0 gap-1.5">
-          <button
-            type="button"
-            disabled={!path || busy !== null}
-            onClick={onCopy}
-            className="rounded-md border border-mesh-border px-2.5 py-1 text-xs hover:bg-mesh-card disabled:opacity-50"
-          >
-            复制
-          </button>
-          <button
-            type="button"
-            disabled={!absolutePath || busy !== null}
-            onClick={onOpen}
-            className="rounded-md border border-mesh-border px-2.5 py-1 text-xs hover:bg-mesh-card disabled:opacity-50"
-          >
-            {busy === openKey ? '打开中…' : '打开'}
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

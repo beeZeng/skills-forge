@@ -96,6 +96,10 @@ function mapCliItem(item, { sourceId, sourceName, baseUrl }) {
   const updatedAt = item.updatedAt
     ? new Date(item.updatedAt).toISOString().slice(0, 10)
     : undefined
+  const base = String(baseUrl || '').replace(/\/+$/, '')
+  const homepageUrl = base
+    ? `${base}/skills/${encodeURIComponent(namespace)}/${encodeURIComponent(slug)}`
+    : undefined
   return {
     uid: `${sourceId}:${namespace}/${slug}`,
     sourceId,
@@ -112,6 +116,16 @@ function mapCliItem(item, { sourceId, sourceName, baseUrl }) {
     sizeLabel: undefined,
     license: item.license,
     updatedAt,
+    homepageUrl,
+    packageSource: base
+      ? {
+          kind: 'skillhub',
+          baseUrl: base,
+          namespace,
+          slug,
+          version,
+        }
+      : undefined,
     installed: false,
     updateAvailable: false,
     favorite: false,

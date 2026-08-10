@@ -388,6 +388,71 @@ textarea {
   animation: skill-drawer-in 180ms ease-out;
 }
 
+.skill-md-preview h1,
+.skill-md-preview h2,
+.skill-md-preview h3,
+.skill-md-preview h4,
+.skill-md-preview h5,
+.skill-md-preview h6 {
+  color: var(--mesh-text, #e8eaed);
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+  line-height: 1.35;
+}
+.skill-md-preview h1 { font-size: 1.35rem; }
+.skill-md-preview h2 { font-size: 1.15rem; }
+.skill-md-preview h3 { font-size: 1.05rem; }
+.skill-md-preview p { margin: 0.55rem 0; }
+.skill-md-preview ul,
+.skill-md-preview ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+.skill-md-preview ul { list-style: disc; }
+.skill-md-preview ol { list-style: decimal; }
+.skill-md-preview li { margin: 0.2rem 0; }
+.skill-md-preview blockquote {
+  margin: 0.75rem 0;
+  padding: 0.4rem 0.85rem;
+  border-left: 3px solid color-mix(in srgb, var(--mesh-accent, #5b8def) 70%, transparent);
+  color: var(--mesh-dim, #9aa3b2);
+  background: color-mix(in srgb, var(--mesh-card, #1a1f2a) 80%, transparent);
+}
+.skill-md-preview hr {
+  border: 0;
+  border-top: 1px solid var(--mesh-border, #2a3140);
+  margin: 1rem 0;
+}
+.skill-md-preview a {
+  color: var(--mesh-accent, #5b8def);
+  text-decoration: underline;
+}
+.skill-md-preview .md-code,
+.skill-md-preview code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--mesh-card, #1a1f2a) 90%, transparent);
+  color: var(--mesh-text, #e8eaed);
+}
+.skill-md-preview .md-pre {
+  margin: 0.75rem 0;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--mesh-border, #2a3140);
+  background: color-mix(in srgb, var(--mesh-bg, #0f1218) 92%, #000);
+}
+.skill-md-preview .md-pre code {
+  padding: 0;
+  background: transparent;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+.skill-md-preview strong { color: var(--mesh-text, #e8eaed); }
+
 /* Catalog refresh indeterminate progress */
 .catalog-sync-track {
   position: relative;

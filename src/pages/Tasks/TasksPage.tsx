@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, RotateCcw, XCircle } from 'lucide-react'
+import { CheckCircle2, FolderOpen, Loader2, RotateCcw, XCircle } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAppStore } from '@/stores/app-store'
@@ -11,8 +11,17 @@ export function TasksPage() {
   const cancelTask = useAppStore((s) => s.cancelTask)
   const highlightTaskId = useAppStore((s) => s.highlightTaskId)
   const setHighlightTaskId = useAppStore((s) => s.setHighlightTaskId)
+  const logsDirDisplay = useAppStore((s) => s.logsDirDisplay)
+  const logsTodayFileDisplay = useAppStore((s) => s.logsTodayFileDisplay)
+  const logsRetainDays = useAppStore((s) => s.logsRetainDays)
+  const refreshLogsInfo = useAppStore((s) => s.refreshLogsInfo)
+  const openLogsDirectory = useAppStore((s) => s.openLogsDirectory)
   const [params] = useSearchParams()
   const refs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  useEffect(() => {
+    void refreshLogsInfo()
+  }, [refreshLogsInfo])
 
   useEffect(() => {
     const fromQuery = params.get('task')
@@ -31,6 +40,33 @@ export function TasksPage() {
       <div>
         <h1 className="text-xl font-semibold">任务日志</h1>
         <p className="mt-1 text-sm text-mesh-dim">下载、安装、更新、导入、同步、取消同步与发布任务统一在此追踪</p>
+      </div>
+
+      <div className="rounded-mesh border border-mesh-border bg-mesh-card p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">运行日志存放路径</div>
+            <p className="mt-1 text-xs text-mesh-dim">
+              按天生成日志文件（以日期命名），保留最近 {logsRetainDays || 7} 天，便于排查故障
+            </p>
+            <div className="mt-2 break-all font-mono text-xs text-mesh-muted">
+              {logsDirDisplay || '加载中…'}
+            </div>
+            {logsTodayFileDisplay ? (
+              <div className="mt-1 break-all font-mono text-[11px] text-mesh-dim">
+                今日文件：{logsTodayFileDisplay}
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-mesh border border-mesh-border px-3 py-2 text-xs hover:bg-mesh-panel"
+            onClick={() => void openLogsDirectory()}
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            打开日志目录
+          </button>
+        </div>
       </div>
 
       <div className="space-y-3">

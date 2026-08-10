@@ -70,11 +70,53 @@ function formatDay(value) {
   }
 }
 
+/** Prefer github.com URLs; never treat marketplace listing pages as GitHub. */
+function pickGithubUrl(...candidates) {
+  for (const raw of candidates) {
+    if (!raw) continue
+    const url = String(raw).trim()
+    if (/^https?:\/\/github\.com\//i.test(url)) return url
+  }
+  return undefined
+}
+
+function parseGithubRepoUrl(url) {
+  if (!url) return null
+  const m = String(url).trim().match(
+    /^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(?:tree|blob)\/([^/]+)(?:\/(.*))?)?\/?$/i,
+  )
+  if (!m) return null
+  return {
+    owner: m[1],
+    repo: m[2],
+    branch: m[3] || undefined,
+    path: (m[4] || '').replace(/\/+$/, ''),
+  }
+}
+
 function mapSkillsMpItem(item, { sourceId, sourceName }) {
   const name = item.name || item.slug
   if (!name) return null
   const author = item.author || item.route?.ownerSlug || 'community'
   const skillId = item.id || `${author}/${name}`
+  const githubUrl = pickGithubUrl(item.githubUrl, item.htmlUrl, item.url, item.homepage)
+  // Prefer route.sourceSkillPath; item.path is often just "SKILL.md"
+  const sourceSkillPath = item.route?.sourceSkillPath || ''
+  const branch = item.branch || item.route?.branch || 'main'
+  const parsed = parseGithubRepoUrl(githubUrl)
+  if (parsed && !parsed.branch) parsed.branch = branch
+  const homepageUrl =
+    item.skillUrl ||
+    (item.route?.ownerSlug && item.route?.skillSlug
+      ? `https://skillsmp.com/${encodeURIComponent(item.route.ownerSlug)}/${encodeURIComponent(item.route.skillSlug)}`
+      : `https://skillsmp.com/skills/${encodeURIComponent(String(skillId))}`)
+  const dirPath = sourceSkillPath
+    ? String(sourceSkillPath).replace(/\\/g, '/').replace(/\/?SKILL\.md$/i, '')
+    : parsed?.path
+      ? String(parsed.path).replace(/\\/g, '/').replace(/\/?SKILL\.md$/i, '')
+      : ''
+  const owner = parsed?.owner || item.route?.ownerSlug || author
+  const repo = parsed?.repo || item.route?.repoSlug
   return {
     uid: `${sourceId}:${skillId}`,
     sourceId,
@@ -89,6 +131,19 @@ function mapSkillsMpItem(item, { sourceId, sourceName }) {
     tags: item.contentLanguage ? [item.contentLanguage] : [],
     category: '未分类',
     updatedAt: formatDay(item.updatedAt),
+    homepageUrl,
+    githubUrl: githubUrl || undefined,
+    packageSource: githubUrl && owner && repo
+      ? {
+          kind: 'github',
+          githubUrl,
+          owner,
+          repo,
+          branch: parsed?.branch || branch,
+          path: dirPath || undefined,
+          sourceSkillPath: sourceSkillPath || (dirPath ? `${dirPath}/SKILL.md` : undefined),
+        }
+      : undefined,
     installed: false,
     updateAvailable: false,
     favorite: false,
@@ -102,8 +157,16 @@ function mapPaleBlueDotItem(item, { sourceId, sourceName }) {
   const name = item.name
   if (!name) return null
   const owner = item.githubOwner || 'community'
-  const skillId = item.id || `${owner}/${item.githubRepo || 'repo'}/${name}`
+  const repo = item.githubRepo || 'repo'
+  const skillId = item.id || `${owner}/${repo}/${name}`
   const tags = Array.isArray(item.compatibility?.platforms) ? item.compatibility.platforms : []
+  const githubUrl =
+    pickGithubUrl(item.githubUrl, item.htmlUrl, item.url) ||
+    (item.githubOwner && item.githubRepo
+      ? `https://github.com/${item.githubOwner}/${item.githubRepo}`
+      : undefined)
+  const homepageUrl = githubUrl || 'https://skills.palebluedot.live'
+  const skillPath = item.path || item.skillPath || item.sourceSkillPath || ''
   return {
     uid: `${sourceId}:${skillId}`,
     sourceId,
@@ -119,6 +182,19 @@ function mapPaleBlueDotItem(item, { sourceId, sourceName }) {
     category: tags[0] || '未分类',
     license: item.license || undefined,
     updatedAt: formatDay(item.updatedAt),
+    homepageUrl,
+    githubUrl,
+    packageSource: item.githubOwner && item.githubRepo
+      ? {
+          kind: 'github',
+          githubUrl,
+          owner: item.githubOwner,
+          repo: item.githubRepo,
+          branch: item.branch || item.defaultBranch || 'main',
+          path: skillPath ? String(skillPath).replace(/\/?SKILL\.md$/i, '') : undefined,
+          sourceSkillPath: skillPath || undefined,
+        }
+      : undefined,
     installed: false,
     updateAvailable: false,
     favorite: false,

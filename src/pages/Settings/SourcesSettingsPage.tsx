@@ -110,9 +110,9 @@ export function SourcesSettingsPage() {
 
       {!lastCatalogSyncedAt && !catalogSyncing ? (
         <div className="rounded-mesh border border-mesh-accent/35 bg-mesh-accentSoft/40 px-4 py-3 text-sm">
-          <div className="font-medium text-mesh-text">首次启动需手动刷新列表</div>
+          <div className="font-medium text-mesh-text">技能列表尚未同步</div>
           <p className="mt-1 text-xs text-mesh-dim">
-            配置好技能平台后，请点击「刷新全部列表」完成首次同步；之后约 15 分钟内会优先使用缓存。
+            每次进入「发现」会自动拉取；也可在此点击「刷新全部列表」手动同步。
           </p>
         </div>
       ) : null}

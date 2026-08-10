@@ -1,8 +1,9 @@
-import { FolderOpen, Loader2, Trash2, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { Copy, Eye, ExternalLink, FolderOpen, Loader2, RefreshCw, Trash2, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAppStore } from '@/stores/app-store'
 import { cn, formatRelative } from '@/lib/utils'
+import { SkillMarkdownPreviewModal } from '@/components/skill/SkillMarkdownPreviewModal'
 
 function AgentSyncRow({
   skillUid,
@@ -12,6 +13,7 @@ function AgentSyncRow({
   installed,
   synced,
   onToggle,
+  onResync,
 }: {
   skillUid: string
   agentId: string
@@ -20,6 +22,7 @@ function AgentSyncRow({
   installed: boolean
   synced: boolean
   onToggle: () => void
+  onResync: () => void
 }) {
   const busy = useAppStore((s) =>
     s.tasks.some(
@@ -32,15 +35,27 @@ function AgentSyncRow({
   )
 
   return (
-    <div className="flex items-center justify-between rounded-mesh border border-mesh-border bg-mesh-card px-3 py-2">
-      <div>
+    <div className="flex items-center justify-between gap-2 rounded-mesh border border-mesh-border bg-mesh-card px-3 py-2">
+      <div className="min-w-0">
         <div className="text-sm">{agentName}</div>
-        <div className="text-[11px] text-mesh-dim">
+        <div className="truncate text-[11px] text-mesh-dim">
           {busy ? '同步任务进行中...' : installed ? agentPath || '已发现' : '未发现'}
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-1.5">
         {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin text-mesh-accent" /> : null}
+        {synced && installed ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onResync}
+            title="重新同步到该智能体"
+            className="inline-flex items-center gap-1 rounded-md border border-mesh-border px-1.5 py-1 text-[11px] text-mesh-muted hover:bg-mesh-panel hover:text-mesh-text disabled:opacity-40"
+          >
+            <RefreshCw className="h-3 w-3" />
+            同步
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={!installed || busy}
@@ -74,27 +89,35 @@ export function SkillDrawer() {
   const updateSkill = useAppStore((s) => s.updateSkill)
   const deleteSkill = useAppStore((s) => s.deleteSkill)
   const toggleAgentSync = useAppStore((s) => s.toggleAgentSync)
+  const resyncSkill = useAppStore((s) => s.resyncSkill)
   const openSkillDirectory = useAppStore((s) => s.openSkillDirectory)
+  const [previewOpen, setPreviewOpen] = useState(false)
 
   // 切换页面时自动关闭，避免详情残留在其他路由上
   useEffect(() => {
     closeDrawer()
+    setPreviewOpen(false)
   }, [location.pathname, closeDrawer])
+
+  useEffect(() => {
+    if (!open) setPreviewOpen(false)
+  }, [open])
 
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeDrawer()
+      if (event.key === 'Escape' && !previewOpen) closeDrawer()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, closeDrawer])
+  }, [open, closeDrawer, previewOpen])
 
   if (!open || !skill) return null
 
   const hasSync = skill.syncedAgents.length > 0
 
   return (
+    <>
     <div className="fixed inset-0 z-[160] flex justify-end">
       <button
         type="button"
@@ -136,7 +159,17 @@ export function SkillDrawer() {
 
         <div className="flex-1 space-y-5 overflow-y-auto p-4 text-sm">
           <section>
-            <div className="mb-1.5 text-xs font-medium text-mesh-dim">简介</div>
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="text-xs font-medium text-mesh-dim">简介</div>
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(true)}
+                className="inline-flex items-center gap-1 rounded-md border border-mesh-border px-2 py-0.5 text-[11px] text-mesh-muted hover:bg-mesh-card hover:text-mesh-text"
+              >
+                <Eye className="h-3 w-3" />
+                预览文档
+              </button>
+            </div>
             <p className="leading-6 text-mesh-muted">{skill.description}</p>
           </section>
 
@@ -168,12 +201,81 @@ export function SkillDrawer() {
                 </span>
               </div>
             ))}
-            <div className="mt-1 text-[11px] text-mesh-dim">暂无在线文档</div>
+            {skill.homepageUrl ? (
+              <div className="space-y-1.5 border-t border-mesh-border pt-2">
+                <div className="text-xs text-mesh-dim">原始地址</div>
+                <div className="break-all font-mono text-[11px] text-mesh-muted" title={skill.homepageUrl}>
+                  {skill.homepageUrl}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-md border border-mesh-border px-2 py-0.5 text-[11px] text-mesh-muted hover:bg-mesh-panel hover:text-mesh-text"
+                    onClick={() => {
+                      void (async () => {
+                        try {
+                          await navigator.clipboard.writeText(skill.homepageUrl!)
+                          useAppStore.getState().showToast('已复制原始地址', 'success')
+                        } catch {
+                          useAppStore.getState().showToast('复制失败', 'error')
+                        }
+                      })()
+                    }}
+                  >
+                    <Copy className="h-3 w-3" />
+                    复制
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-md border border-mesh-border px-2 py-0.5 text-[11px] text-mesh-muted hover:bg-mesh-panel hover:text-mesh-text"
+                    onClick={() => {
+                      void (async () => {
+                        const api = window.skillMesh?.shell?.openExternal
+                        if (api) {
+                          const result = await api(skill.homepageUrl!)
+                          if (!result.ok) {
+                            useAppStore.getState().showToast(result.error || '打开失败', 'error')
+                          }
+                          return
+                        }
+                        window.open(skill.homepageUrl, '_blank', 'noopener,noreferrer')
+                      })()
+                    }}
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    浏览器打开
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-1 text-[11px] text-mesh-dim">暂无原始地址</div>
+            )}
+            <button
+              type="button"
+              onClick={() => setPreviewOpen(true)}
+              className="mt-1 inline-flex items-center gap-1 text-[11px] text-mesh-accent hover:underline"
+            >
+              <Eye className="h-3 w-3" />
+              预览 SKILL.md
+            </button>
           </section>
 
           {skill.installed ? (
             <section>
-              <div className="mb-2 text-xs font-medium text-mesh-dim">同步到智能体</div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-xs font-medium text-mesh-dim">同步到智能体</div>
+                {hasSync ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-md border border-mesh-border px-2 py-0.5 text-[11px] text-mesh-muted hover:bg-mesh-card hover:text-mesh-text"
+                    onClick={() => resyncSkill(skill.uid)}
+                    title="将本地 Skill 重新写入所有已同步智能体"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    全部重新同步
+                  </button>
+                ) : null}
+              </div>
               <div className="space-y-2">
                 {agents.map((agent) => (
                   <AgentSyncRow
@@ -185,6 +287,7 @@ export function SkillDrawer() {
                     installed={agent.installed}
                     synced={skill.syncedAgents.includes(agent.id)}
                     onToggle={() => toggleAgentSync(skill.uid, agent.id)}
+                    onResync={() => resyncSkill(skill.uid, agent.id)}
                   />
                 ))}
               </div>
@@ -270,5 +373,11 @@ export function SkillDrawer() {
         </div>
       </aside>
     </div>
+    <SkillMarkdownPreviewModal
+      skill={skill}
+      open={previewOpen}
+      onClose={() => setPreviewOpen(false)}
+    />
+    </>
   )
 }

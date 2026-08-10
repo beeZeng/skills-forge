@@ -131,7 +131,23 @@ app.whenReady().then(() => {
 
   const dataRoot = path.join(app.getPath('userData'), 'skillmesh-data')
   fs.mkdirSync(dataRoot, { recursive: true })
-  registerIpc({ dataRoot, homeDir: os.homedir() })
+  try {
+    const { initAppLog } = require('./logging/app-log.cjs')
+    initAppLog(dataRoot)
+  } catch (error) {
+    console.warn('[Nexus] app log init skipped', error)
+  }
+  let skillsRootOverride = null
+  try {
+    const cfgPath = path.join(dataRoot, 'skills-root.json')
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+      if (cfg && typeof cfg.path === 'string' && cfg.path.trim()) skillsRootOverride = cfg.path.trim()
+    }
+  } catch (error) {
+    console.warn('[Nexus] skills-root config skipped', error)
+  }
+  registerIpc({ dataRoot, homeDir: os.homedir(), skillsRoot: skillsRootOverride })
   createWindow()
 })
 
@@ -165,6 +181,22 @@ ipcMain.handle('shell:openPath', async (_event, targetPath) => {
   if (typeof targetPath !== 'string' || !targetPath) return { ok: false }
   const err = await shell.openPath(targetPath)
   return { ok: !err, error: err || undefined }
+})
+
+ipcMain.handle('shell:openExternal', async (_event, targetUrl) => {
+  if (typeof targetUrl !== 'string' || !targetUrl.trim()) {
+    return { ok: false, error: '链接为空' }
+  }
+  const url = targetUrl.trim()
+  if (!/^https?:\/\//i.test(url)) {
+    return { ok: false, error: '仅支持 http(s) 链接' }
+  }
+  try {
+    await shell.openExternal(url)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : '打开失败' }
+  }
 })
 
 ipcMain.handle('app:focus', async () => {

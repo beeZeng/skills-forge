@@ -75,9 +75,16 @@ export interface AgentInstallation {
   type: string
   name: string
   installed: boolean
+  /** Detected product / app version when available. */
+  version?: string
+  /** Executable file path if detected. */
   executablePath?: string
+  /** App install directory (derived from executable / markers). */
+  installPath?: string
   skillPath?: string
   defaultSkillPath?: string
+  /** Official product homepage for not-installed agents. */
+  homepageUrl?: string
   lastDetectedAt?: string
 }
 
@@ -99,6 +106,29 @@ export interface Skill {
   updatedAt?: string
   lastSyncedAt?: string
   localPath?: string
+  /** SHA-256 of installed package tree; used to detect local deletion / corruption. */
+  contentHash?: string
+  /** Where package body was downloaded from (github:/clawhub:/skillhub:…). */
+  contentSource?: string
+  /** Public listing / original page URL on the skill source. */
+  homepageUrl?: string
+  githubUrl?: string
+  /** Where to download full package content from (GitHub / ClawHub / …). */
+  packageSource?: {
+    kind: 'github' | 'clawhub' | 'skillhub' | string
+    githubUrl?: string
+    owner?: string
+    repo?: string
+    branch?: string
+    path?: string
+    sourceSkillPath?: string
+    clawhubSlug?: string
+    /** SkillHub / Pangu registry base URL */
+    baseUrl?: string
+    namespace?: string
+    slug?: string
+    version?: string
+  }
   installed: boolean
   updateAvailable: boolean
   favorite: boolean
@@ -184,6 +214,8 @@ export interface PersistedUiState {
   accountHint?: Pick<AppAccount, 'loggedIn' | 'hubBaseUrl' | 'userId' | 'displayName' | 'email'>
   /** Agents that receive newly installed Skills automatically. */
   defaultSyncAgentIds?: string[]
+  /** Local Nexus skills repository root (display path). */
+  skillsRootPath?: string
   /** ISO time of last successful full/partial catalog refresh. */
   lastCatalogSyncedAt?: string
 }

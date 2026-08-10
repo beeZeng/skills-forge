@@ -20,6 +20,7 @@ export interface SkillMeshApi {
   }
   shell: {
     openPath: (targetPath: string) => Promise<{ ok: boolean; error?: string }>
+    openExternal: (targetUrl: string) => Promise<{ ok: boolean; error?: string }>
     openSkillDir: (payload: string | {
       localPath?: string
       skill?: {
@@ -36,6 +37,12 @@ export interface SkillMeshApi {
   }
   agents: {
     scan: () => Promise<AgentInstallation[]>
+    validateSkillPath: (payload: { path: string }) => Promise<{
+      ok: boolean
+      error?: string
+      path?: string
+      displayPath?: string
+    }>
     syncSkill: (payload: {
       action: 'link' | 'unlink'
       skill: {
@@ -63,8 +70,86 @@ export interface SkillMeshApi {
       latestVersion?: string
       localPath?: string
       content?: string
-    }) => Promise<{ ok: boolean; localPath?: string; error?: string }>
+      homepageUrl?: string
+      githubUrl?: string
+      packageSource?: import('@/types').Skill['packageSource']
+      registryUrl?: string
+      token?: string
+      origin?: import('@/types').Skill['origin']
+      forceFetch?: boolean
+      contentHash?: string
+    }) => Promise<{
+      ok: boolean
+      localPath?: string
+      error?: string
+      contentFetched?: boolean
+      contentSource?: string
+      contentHash?: string
+    }>
     removePackage: (localPath: string) => Promise<{ ok: boolean }>
+    verifyPackage: (payload: {
+      localPath?: string
+      contentHash?: string
+      name?: string
+      description?: string
+      version?: string
+      sourceId?: string
+      sourceName?: string
+    }) => Promise<{
+      ok: boolean
+      exists?: boolean
+      isStub?: boolean
+      contentHash?: string
+      hashMatches?: boolean
+      error?: string
+    }>
+    verifyPackages: (
+      items: Array<{
+        uid: string
+        localPath?: string
+        contentHash?: string
+        name?: string
+        description?: string
+        version?: string
+        sourceId?: string
+        sourceName?: string
+      }>,
+    ) => Promise<{
+      ok: boolean
+      results: Record<
+        string,
+        {
+          ok: boolean
+          exists?: boolean
+          isStub?: boolean
+          contentHash?: string
+          hashMatches?: boolean
+          error?: string
+        }
+      >
+    }>
+    readMarkdown: (payload: {
+      localPath?: string
+      skill?: {
+        skillId: string
+        name: string
+        description?: string
+        version: string
+        sourceId: string
+        sourceName?: string
+        namespace?: string
+        localPath?: string
+        content?: string
+      }
+    }) => Promise<{
+      ok: boolean
+      content?: string
+      fileName?: string
+      path?: string
+      displayPath?: string
+      isStub?: boolean
+      error?: string
+    }>
     packZip: (payload: {
       skill: {
         skillId: string
@@ -76,6 +161,7 @@ export interface SkillMeshApi {
         namespace?: string
         localPath?: string
         content?: string
+        origin?: import('@/types').Skill['origin']
       }
       version?: string
     }) => Promise<{
@@ -185,9 +271,51 @@ export interface SkillMeshApi {
       dataRootDisplay?: string
       skillsRoot?: string
       skillsRootDisplay?: string
+      skillsRootDefault?: string
+      skillsRootDefaultDisplay?: string
       stateFile?: string
       stateFileDisplay?: string
     }>
+    setSkillsRoot: (payload: { path: string }) => Promise<{
+      ok: boolean
+      error?: string
+      path?: string
+      displayPath?: string
+      restartRequired?: boolean
+    }>
+    getDiskSpace: (payload?: { path?: string }) => Promise<{
+      ok: boolean
+      error?: string
+      path?: string
+      volumeLabel?: string
+      totalGb?: number
+      freeGb?: number
+      usedGb?: number
+      skillsUsedGb?: number
+      totalBytes?: number
+      freeBytes?: number
+      usedBytes?: number
+      skillsUsedBytes?: number
+    }>
+  }
+  logs: {
+    getInfo: () => Promise<{
+      ok: boolean
+      logsDir?: string
+      logsDirDisplay?: string
+      todayFile?: string
+      todayFileDisplay?: string
+      retainDays?: number
+      dataRoot?: string
+      dataRootDisplay?: string
+    }>
+    append: (payload: {
+      level?: string
+      message: string
+      meta?: unknown
+    }) => Promise<{ ok: boolean; file?: string; error?: string }>
+    purge: () => Promise<{ ok: boolean; removed?: string[] }>
+    openDir: () => Promise<{ ok: boolean; error?: string; path?: string; pathDisplay?: string }>
   }
 }
 

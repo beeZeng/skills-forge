@@ -77,6 +77,8 @@ export function Sidebar() {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
   const used = useAppStore((s) => s.storageUsedGb)
   const total = useAppStore((s) => s.storageTotalGb)
+  const free = useAppStore((s) => s.storageFreeGb)
+  const volumeLabel = useAppStore((s) => s.storageVolumeLabel)
   const runningCount = useAppStore(selectRunningTaskCount)
   const failedCount = useAppStore(selectFailedTaskCount)
   const taskBadge = runningCount + failedCount
@@ -85,7 +87,7 @@ export function Sidebar() {
   const [collapsedSettingsOpen, setCollapsedSettingsOpen] = useState(false)
   const [settingsFlyoutPos, setSettingsFlyoutPos] = useState<{ top: number; left: number } | null>(null)
   const settingsBtnRef = useRef<HTMLButtonElement>(null)
-  const pct = Math.min(100, Math.round((used / total) * 100))
+  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
 
   useEffect(() => {
     if (!collapsed) setCollapsedSettingsOpen(false)
@@ -288,14 +290,17 @@ export function Sidebar() {
         <div className="app-no-drag shrink-0 space-y-3 border-t border-mesh-border p-3 text-xs">
           <div>
             <div className="mb-1.5 flex items-center justify-between font-semibold text-mesh-muted">
-              <span>存储空间</span>
+              <span>存储空间{volumeLabel ? ` · ${volumeLabel.replace(/\\$/, '')}` : ''}</span>
               <span>
-                {used}GB / {total}GB
+                {total > 0 ? `${used} / ${total} GB` : '—'}
               </span>
             </div>
             <div className="h-1.5 overflow-hidden rounded-full bg-mesh-card">
               <div className="h-full rounded-full bg-mesh-accent" style={{ width: `${pct}%` }} />
             </div>
+            {total > 0 ? (
+              <div className="mt-1 text-[10px] text-mesh-dim">剩余 {free} GB</div>
+            ) : null}
           </div>
         </div>
       ) : null}

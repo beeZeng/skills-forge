@@ -1,0 +1,416 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Palette inspired by Grafana Dark / Light + experimental themes */
+
+:root {
+  /* Grafana typography tokens */
+  --mesh-font-sans: 'Inter', 'Helvetica', 'Arial', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --mesh-font-mono: 'Roboto Mono', monospace;
+  --mesh-font-size: 14px;
+  --mesh-font-weight-regular: 400;
+  --mesh-font-weight-medium: 500;
+}
+
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+  --mesh-bg: #111217;
+  --mesh-panel: #181b1f;
+  --mesh-card: #181b1f;
+  --mesh-card-hover: #22252b;
+  --mesh-border: #2c3235;
+  --mesh-border-bright: #3d4248;
+  --mesh-text: #ccccdc;
+  --mesh-muted: #9fa7b3;
+  --mesh-dim: #8e8e8e;
+  --mesh-accent: #5794f2;
+  --mesh-accent-soft: rgba(87, 148, 242, 0.16);
+  --mesh-success: #73bf69;
+  --mesh-warning: #ff9830;
+  --mesh-danger: #f2495c;
+  --mesh-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --dash-panel-bg: #181b1f;
+  --dash-panel-border: #2c3235;
+  --dash-panel-border-hover: #3d4248;
+  --dash-header-bg: #111217;
+  --dash-header-text: #8e8e8e;
+  --dash-ok-bg: rgba(115, 191, 105, 0.1);
+  --dash-ok-border: rgba(115, 191, 105, 0.4);
+  --dash-warn-bg: rgba(255, 152, 48, 0.1);
+  --dash-warn-border: rgba(255, 152, 48, 0.4);
+  --dash-err-bg: rgba(242, 73, 92, 0.1);
+  --dash-err-border: rgba(242, 73, 92, 0.4);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --mesh-bg: #f4f5f5;
+  --mesh-panel: #ffffff;
+  --mesh-card: #ffffff;
+  --mesh-card-hover: #f4f5f5;
+  --mesh-border: #d8d9da;
+  --mesh-border-bright: #b8bcc2;
+  --mesh-text: #181b1f;
+  --mesh-muted: #52545c;
+  --mesh-dim: #6e6e6e;
+  --mesh-accent: #3d71d9;
+  --mesh-accent-soft: rgba(61, 113, 217, 0.12);
+  --mesh-success: #1a7f37;
+  --mesh-warning: #cc7a00;
+  --mesh-danger: #c4162a;
+  --mesh-shadow: 0 1px 4px rgba(24, 27, 31, 0.08);
+  --dash-panel-bg: #ffffff;
+  --dash-panel-border: #d8d9da;
+  --dash-panel-border-hover: #b8bcc2;
+  --dash-header-bg: #f4f5f5;
+  --dash-header-text: #6e6e6e;
+  --dash-ok-bg: rgba(26, 127, 55, 0.08);
+  --dash-ok-border: rgba(26, 127, 55, 0.35);
+  --dash-warn-bg: rgba(204, 122, 0, 0.08);
+  --dash-warn-border: rgba(204, 122, 0, 0.35);
+  --dash-err-bg: rgba(196, 22, 42, 0.08);
+  --dash-err-border: rgba(196, 22, 42, 0.35);
+}
+
+@media (prefers-color-scheme: light) {
+  [data-theme='system'] {
+    color-scheme: light;
+    --mesh-bg: #f4f5f5;
+    --mesh-panel: #ffffff;
+    --mesh-card: #ffffff;
+    --mesh-card-hover: #f4f5f5;
+    --mesh-border: #d8d9da;
+    --mesh-border-bright: #b8bcc2;
+    --mesh-text: #181b1f;
+    --mesh-muted: #52545c;
+    --mesh-dim: #6e6e6e;
+    --mesh-accent: #3d71d9;
+    --mesh-accent-soft: rgba(61, 113, 217, 0.12);
+    --mesh-success: #1a7f37;
+    --mesh-warning: #cc7a00;
+    --mesh-danger: #c4162a;
+    --mesh-shadow: 0 1px 4px rgba(24, 27, 31, 0.08);
+    --dash-panel-bg: #ffffff;
+    --dash-panel-border: #d8d9da;
+    --dash-panel-border-hover: #b8bcc2;
+    --dash-header-bg: #f4f5f5;
+    --dash-header-text: #6e6e6e;
+    --dash-ok-bg: rgba(26, 127, 55, 0.08);
+    --dash-ok-border: rgba(26, 127, 55, 0.35);
+    --dash-warn-bg: rgba(204, 122, 0, 0.08);
+    --dash-warn-border: rgba(204, 122, 0, 0.35);
+    --dash-err-bg: rgba(196, 22, 42, 0.08);
+    --dash-err-border: rgba(196, 22, 42, 0.35);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme='system'] {
+    color-scheme: dark;
+    --mesh-bg: #111217;
+    --mesh-panel: #181b1f;
+    --mesh-card: #181b1f;
+    --mesh-card-hover: #22252b;
+    --mesh-border: #2c3235;
+    --mesh-border-bright: #3d4248;
+    --mesh-text: #ccccdc;
+    --mesh-muted: #9fa7b3;
+    --mesh-dim: #8e8e8e;
+    --mesh-accent: #5794f2;
+    --mesh-accent-soft: rgba(87, 148, 242, 0.16);
+    --mesh-success: #73bf69;
+    --mesh-warning: #ff9830;
+    --mesh-danger: #f2495c;
+    --mesh-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --dash-panel-bg: #181b1f;
+    --dash-panel-border: #2c3235;
+    --dash-panel-border-hover: #3d4248;
+    --dash-header-bg: #111217;
+    --dash-header-text: #8e8e8e;
+    --dash-ok-bg: rgba(115, 191, 105, 0.1);
+    --dash-ok-border: rgba(115, 191, 105, 0.4);
+    --dash-warn-bg: rgba(255, 152, 48, 0.1);
+    --dash-warn-border: rgba(255, 152, 48, 0.4);
+    --dash-err-bg: rgba(242, 73, 92, 0.1);
+    --dash-err-border: rgba(242, 73, 92, 0.4);
+  }
+}
+
+/* Grafana experimental: Sapphire dusk */
+[data-theme='sapphiredusk'] {
+  color-scheme: dark;
+  --mesh-bg: #182036;
+  --mesh-panel: #12192e;
+  --mesh-card: #212c47;
+  --mesh-card-hover: #364057;
+  --mesh-border: #2c3853;
+  --mesh-border-bright: #404d6b;
+  --mesh-text: #ffffff;
+  --mesh-muted: #bcccdd;
+  --mesh-dim: #838da5;
+  --mesh-accent: #93ebf0;
+  --mesh-accent-soft: rgba(147, 235, 240, 0.16);
+  --mesh-success: #1a7f4b;
+  --mesh-warning: #d448ea;
+  --mesh-danger: #c63370;
+  --mesh-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --dash-panel-bg: #12192e;
+  --dash-panel-border: #2c3853;
+  --dash-panel-border-hover: #404d6b;
+  --dash-header-bg: #182036;
+  --dash-header-text: #838da5;
+  --dash-ok-bg: rgba(26, 127, 75, 0.14);
+  --dash-ok-border: rgba(26, 127, 75, 0.45);
+  --dash-warn-bg: rgba(212, 72, 234, 0.12);
+  --dash-warn-border: rgba(212, 72, 234, 0.4);
+  --dash-err-bg: rgba(198, 51, 112, 0.12);
+  --dash-err-border: rgba(198, 51, 112, 0.4);
+}
+
+/* Grafana experimental: Tron */
+[data-theme='tron'] {
+  color-scheme: dark;
+  --mesh-bg: #0d1521;
+  --mesh-panel: #0f1b2a;
+  --mesh-card: #152234;
+  --mesh-card-hover: #1a2d42;
+  --mesh-border: rgba(0, 255, 255, 0.2);
+  --mesh-border-bright: rgba(0, 255, 255, 0.35);
+  --mesh-text: #e0e0e0;
+  --mesh-muted: rgba(224, 224, 224, 0.75);
+  --mesh-dim: rgba(224, 224, 224, 0.5);
+  --mesh-accent: #00ffff;
+  --mesh-accent-soft: rgba(0, 255, 255, 0.14);
+  --mesh-success: #73bf69;
+  --mesh-warning: #ff9830;
+  --mesh-danger: #f2495c;
+  --mesh-shadow: 0 0 24px rgba(0, 255, 255, 0.08);
+  --dash-panel-bg: #0f1b2a;
+  --dash-panel-border: rgba(0, 255, 255, 0.2);
+  --dash-panel-border-hover: rgba(0, 255, 255, 0.35);
+  --dash-header-bg: #0a0f18;
+  --dash-header-text: rgba(224, 224, 224, 0.55);
+  --dash-ok-bg: rgba(115, 191, 105, 0.12);
+  --dash-ok-border: rgba(115, 191, 105, 0.4);
+  --dash-warn-bg: rgba(255, 152, 48, 0.12);
+  --dash-warn-border: rgba(255, 152, 48, 0.4);
+  --dash-err-bg: rgba(242, 73, 92, 0.12);
+  --dash-err-border: rgba(242, 73, 92, 0.4);
+}
+
+/* Grafana experimental: Gilded grove */
+[data-theme='gildedgrove'] {
+  color-scheme: dark;
+  --mesh-bg: #171c1a;
+  --mesh-panel: #1d2220;
+  --mesh-card: #27312e;
+  --mesh-card-hover: #323d39;
+  --mesh-border: rgba(200, 200, 180, 0.2);
+  --mesh-border-bright: rgba(200, 200, 180, 0.35);
+  --mesh-text: rgb(250, 250, 239);
+  --mesh-muted: rgba(200, 200, 180, 0.85);
+  --mesh-dim: rgba(200, 200, 180, 0.6);
+  --mesh-accent: #feac34;
+  --mesh-accent-soft: rgba(254, 172, 52, 0.16);
+  --mesh-success: #73bf69;
+  --mesh-warning: #ffd783;
+  --mesh-danger: #f2495c;
+  --mesh-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --dash-panel-bg: #1d2220;
+  --dash-panel-border: rgba(200, 200, 180, 0.2);
+  --dash-panel-border-hover: rgba(200, 200, 180, 0.35);
+  --dash-header-bg: #111614;
+  --dash-header-text: rgba(200, 200, 180, 0.65);
+  --dash-ok-bg: rgba(115, 191, 105, 0.12);
+  --dash-ok-border: rgba(115, 191, 105, 0.4);
+  --dash-warn-bg: rgba(254, 172, 52, 0.12);
+  --dash-warn-border: rgba(254, 172, 52, 0.4);
+  --dash-err-bg: rgba(242, 73, 92, 0.12);
+  --dash-err-border: rgba(242, 73, 92, 0.4);
+}
+
+/* Grafana experimental: Gloom */
+[data-theme='gloom'] {
+  color-scheme: dark;
+  --mesh-bg: #09090c;
+  --mesh-panel: #121118;
+  --mesh-card: #211e28;
+  --mesh-card-hover: #2c2834;
+  --mesh-border: rgba(210, 210, 220, 0.2);
+  --mesh-border-bright: rgba(210, 210, 220, 0.32);
+  --mesh-text: rgb(210, 210, 220);
+  --mesh-muted: rgba(210, 210, 220, 0.65);
+  --mesh-dim: rgba(210, 210, 220, 0.48);
+  --mesh-accent: #ff934d;
+  --mesh-accent-soft: rgba(255, 147, 77, 0.14);
+  --mesh-success: #73bf69;
+  --mesh-warning: #f99a5c;
+  --mesh-danger: #f2495c;
+  --mesh-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+  --dash-panel-bg: #121118;
+  --dash-panel-border: rgba(210, 210, 220, 0.2);
+  --dash-panel-border-hover: rgba(210, 210, 220, 0.32);
+  --dash-header-bg: #000000;
+  --dash-header-text: rgba(210, 210, 220, 0.5);
+  --dash-ok-bg: rgba(115, 191, 105, 0.12);
+  --dash-ok-border: rgba(115, 191, 105, 0.4);
+  --dash-warn-bg: rgba(255, 147, 77, 0.12);
+  --dash-warn-border: rgba(255, 147, 77, 0.4);
+  --dash-err-bg: rgba(242, 73, 92, 0.12);
+  --dash-err-border: rgba(242, 73, 92, 0.4);
+}
+
+/* Grafana experimental: Desert bloom */
+[data-theme='desertbloom'] {
+  color-scheme: light;
+  --mesh-bg: #fff8f0;
+  --mesh-panel: #ffffff;
+  --mesh-card: #ffffff;
+  --mesh-card-hover: #f9f3e8;
+  --mesh-border: #d9cec0;
+  --mesh-border-bright: #c4b7a5;
+  --mesh-text: #333333;
+  --mesh-muted: #555555;
+  --mesh-dim: #695f53;
+  --mesh-accent: #ff6f61;
+  --mesh-accent-soft: rgba(255, 111, 97, 0.14);
+  --mesh-success: #4caf50;
+  --mesh-warning: #ffc107;
+  --mesh-danger: #e55b4d;
+  --mesh-shadow: 0 1px 4px rgba(76, 67, 57, 0.08);
+  --dash-panel-bg: #ffffff;
+  --dash-panel-border: #d9cec0;
+  --dash-panel-border-hover: #c4b7a5;
+  --dash-header-bg: #fff8f0;
+  --dash-header-text: #695f53;
+  --dash-ok-bg: rgba(76, 175, 80, 0.1);
+  --dash-ok-border: rgba(76, 175, 80, 0.35);
+  --dash-warn-bg: rgba(255, 193, 7, 0.14);
+  --dash-warn-border: rgba(255, 193, 7, 0.45);
+  --dash-err-bg: rgba(229, 91, 77, 0.1);
+  --dash-err-border: rgba(229, 91, 77, 0.4);
+}
+
+html {
+  height: 100%;
+  font-size: var(--mesh-font-size);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--mesh-bg);
+  color: var(--mesh-text);
+  overflow: hidden;
+  font-family: var(--mesh-font-sans);
+  font-size: var(--mesh-font-size);
+  font-weight: var(--mesh-font-weight-regular);
+  line-height: 1.5;
+  letter-spacing: 0.015em;
+  font-feature-settings: 'tnum' 1, 'cv02' 1, 'cv03' 1, 'cv04' 1, 'cv11' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+code,
+kbd,
+pre,
+samp,
+.font-mono {
+  font-family: var(--mesh-font-mono);
+  font-feature-settings: normal;
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--mesh-border);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--mesh-border-bright);
+}
+
+.app-drag {
+  -webkit-app-region: drag;
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.dash-panel {
+  border: 1px solid var(--dash-panel-border);
+  background: var(--dash-panel-bg);
+  border-radius: 2px;
+  box-shadow: none;
+}
+
+.dash-panel-header {
+  border-bottom: 1px solid var(--dash-panel-border);
+  background: var(--dash-header-bg);
+}
+
+.dash-kpi {
+  border-radius: 2px;
+}
+
+@keyframes skill-drawer-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0.96;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.skill-drawer-panel {
+  animation: skill-drawer-in 180ms ease-out;
+}
+
+/* Catalog refresh indeterminate progress */
+.catalog-sync-track {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mesh-border, #2a3140) 80%, transparent);
+}
+
+.catalog-sync-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--mesh-accent, #6ea8fe);
+  animation: catalog-sync-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes catalog-sync-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}

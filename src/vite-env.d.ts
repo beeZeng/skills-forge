@@ -1,0 +1,200 @@
+/// <reference types="vite/client" />
+import type { AgentInstallation, AppAccount, PersistedUiState, SkillSource, SourceNamespace } from '@/types'
+
+export interface SkillMeshApi {
+  platform: string
+  versions: { electron?: string; chrome?: string; node?: string }
+  storage: {
+    loadState: () => Promise<PersistedUiState | null>
+    saveState: (state: PersistedUiState) => Promise<{ ok: boolean }>
+  }
+  dialog: {
+    openSkillPackage: () => Promise<string | null>
+    openDirectory: (payload?: { title?: string; defaultPath?: string }) => Promise<string | null>
+    confirm: (payload: { title?: string; message?: string; detail?: string }) => Promise<boolean>
+    restartPrompt: (payload: {
+      title?: string
+      message?: string
+      detail?: string
+    }) => Promise<'relaunch' | 'later'>
+  }
+  shell: {
+    openPath: (targetPath: string) => Promise<{ ok: boolean; error?: string }>
+    openSkillDir: (payload: string | {
+      localPath?: string
+      skill?: {
+        skillId: string
+        name: string
+        description?: string
+        version: string
+        latestVersion?: string
+        sourceId: string
+        sourceName?: string
+        namespace?: string
+      }
+    }) => Promise<{ ok: boolean; error?: string; path?: string; localPath?: string }>
+  }
+  agents: {
+    scan: () => Promise<AgentInstallation[]>
+    syncSkill: (payload: {
+      action: 'link' | 'unlink'
+      skill: {
+        skillId: string
+        name: string
+        description?: string
+        version: string
+        sourceId: string
+        sourceName?: string
+        namespace?: string
+        localPath?: string
+      }
+      agentSkillPath: string
+    }) => Promise<{ ok: boolean; error?: string; destPath?: string }>
+  }
+  skills: {
+    ensurePackage: (skill: {
+      skillId: string
+      name: string
+      description?: string
+      version: string
+      sourceId: string
+      sourceName?: string
+      namespace?: string
+      latestVersion?: string
+      localPath?: string
+      content?: string
+    }) => Promise<{ ok: boolean; localPath?: string; error?: string }>
+    removePackage: (localPath: string) => Promise<{ ok: boolean }>
+    packZip: (payload: {
+      skill: {
+        skillId: string
+        name: string
+        description?: string
+        version: string
+        sourceId: string
+        sourceName?: string
+        namespace?: string
+        localPath?: string
+        content?: string
+      }
+      version?: string
+    }) => Promise<{
+      ok: boolean
+      zipPath?: string
+      version?: string
+      name?: string
+      tmpDir?: string
+      error?: string
+    }>
+  }
+  hub: {
+    publish: (payload: {
+      baseUrl: string
+      namespace: string
+      visibility: string
+      zipPath: string
+      confirmWarnings?: boolean
+      tmpDir?: string
+    }) => Promise<{
+      ok: boolean
+      message?: string
+      confirmRequired?: boolean
+      serverMessage?: string
+      result?: {
+        skillId?: number | string
+        namespace?: string
+        slug?: string
+        version?: string
+        status?: string
+      }
+    }>
+    withdrawReview: (payload: {
+      baseUrl: string
+      namespace: string
+      slug: string
+      version: string
+    }) => Promise<{ ok: boolean; message?: string }>
+    deleteSkill: (payload: {
+      baseUrl: string
+      namespace: string
+      slug: string
+      ownerId?: string
+    }) => Promise<{ ok: boolean; message?: string }>
+    getSkillVersionStatus: (payload: {
+      baseUrl: string
+      namespace: string
+      slug: string
+      version: string
+    }) => Promise<{
+      ok: boolean
+      message?: string
+      status?: string
+      version?: string
+      reviewComment?: string
+    }>
+  }
+  sources: {
+    testConnection: (payload: Pick<SkillSource, 'registryUrl' | 'token' | 'type'>) => Promise<{
+      ok: boolean
+      status: 'connected' | 'disconnected' | 'checking'
+      message?: string
+      baseUrl?: string
+    }>
+    listSkills: (payload: {
+      registryUrl?: string
+      token?: string
+      sourceId: string
+      sourceName: string
+      type?: SkillSource['type']
+      query?: string
+      limit?: number
+      useSession?: boolean
+      namespaces?: Array<string | SourceNamespace>
+    }) => Promise<{
+      ok: boolean
+      skills: import('@/types').Skill[]
+      message?: string
+      baseUrl?: string
+    }>
+  }
+  auth: {
+    login: (payload: {
+      baseUrl: string
+      username: string
+      password: string
+    }) => Promise<{ ok: boolean; message?: string; account?: AppAccount }>
+    logout: (payload: { baseUrl?: string }) => Promise<{ ok: boolean }>
+    me: (payload: { baseUrl: string }) => Promise<{
+      ok: boolean
+      loggedIn: boolean
+      message?: string
+      account?: AppAccount
+    }>
+    myNamespaces: (payload: { baseUrl: string }) => Promise<{
+      ok: boolean
+      unauthorized?: boolean
+      namespaces: SourceNamespace[]
+      message?: string
+    }>
+  }
+  app: {
+    relaunch: () => Promise<{ ok: boolean }>
+    getPaths: () => Promise<{
+      ok: boolean
+      dataRoot?: string
+      dataRootDisplay?: string
+      skillsRoot?: string
+      skillsRootDisplay?: string
+      stateFile?: string
+      stateFileDisplay?: string
+    }>
+  }
+}
+
+declare global {
+  interface Window {
+    skillMesh?: SkillMeshApi
+  }
+}
+
+export {}

@@ -26,12 +26,13 @@
     "open:dmg": "open dist-electron/*.dmg"
   },
   "dependencies": {
+    "jszip": "3.10.1",
     "lucide-react": "^0.511.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.6.0",
-    "zustand": "^5.0.5",
-    "jszip": "3.10.1"
+    "readable-stream": "2.3.8",
+    "zustand": "^5.0.5"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
@@ -39,13 +40,16 @@
     "@vitejs/plugin-react": "^4.4.1",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.1.2",
-    "electron": "^35.2.1",
+    "electron": "35.7.5",
     "electron-builder": "^26.15.3",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "wait-on": "^8.0.3"
+  },
+  "overrides": {
+    "readable-stream": "2.3.8"
   },
   "build": {
     "appId": "com.qax.nexus",

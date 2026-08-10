@@ -323,7 +323,7 @@ export function AgentStatusCenter() {
           </div>
           <div className="agent-cap-body">
             <div className="agent-cap-title">更新状态</div>
-            <div className={cn('agent-cap-value', overview.updatable && 'is-warn')}>
+            <div className={cn('agent-cap-value', overview.updatable ? 'is-warn' : undefined)}>
               {overview.updatable}
             </div>
             <div className="agent-cap-sub">
@@ -337,7 +337,7 @@ export function AgentStatusCenter() {
           </div>
           <div className="agent-cap-body">
             <div className="agent-cap-title">健康状态</div>
-            <div className={cn('agent-cap-value', overview.abnormal && 'is-danger')}>
+            <div className={cn('agent-cap-value', overview.abnormal ? 'is-danger' : undefined)}>
               {overview.abnormal ? overview.abnormal : overview.available}
             </div>
             <div className="agent-cap-sub">

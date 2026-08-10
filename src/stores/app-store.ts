@@ -308,7 +308,7 @@ async function mergeLocalAnalytics(skills: Skill[], userId?: string): Promise<Sk
     const key = analyticsSkillId(skill)
     const stats = bulk[key] as SkillStatsResult | undefined
     if (!stats) return skill
-    return applyStatsToSkill(skill, { ok: true, ...stats })
+    return applyStatsToSkill(skill, { ...stats, ok: true })
   })
 }
 
@@ -609,7 +609,7 @@ async function ensureSkillPackageOnDisk(
   skill: Skill,
   options?: {
     forceFetch?: boolean
-    conflictResolution?: 'overwrite' | 'keep' | 'cancel'
+    conflictResolution?: 'overwrite' | 'update' | 'keep' | 'cancel'
     skipAgentInstall?: boolean
   },
 ): Promise<{
@@ -645,7 +645,7 @@ async function ensureSkillPackageOnDisk(
     }
     const local = skill.origin === 'created' || skill.origin === 'imported' || skill.sourceId === 'local'
 
-    const invokeEnsure = (conflictResolution?: 'overwrite' | 'keep' | 'cancel') =>
+    const invokeEnsure = (conflictResolution?: 'overwrite' | 'update' | 'keep' | 'cancel') =>
       window.skillMesh!.skills.ensurePackage({
         uid: skill.uid,
         skillId: skill.skillId,
@@ -3245,7 +3245,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         visibility,
         zipPath: packed.zipPath,
         confirmWarnings: !!confirmWarnings,
-        tmpDir: packed.tmpDir,
+        tmpDir: packed.tmpDir ?? undefined,
       })
 
       if (!result.ok) {

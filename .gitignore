@@ -1,6 +1,9 @@
 node_modules/
 dist/
+dist-electron/
+dist-electron-out/
 release/
 .DS_Store
 *.log
 .vite/
+tsconfig.tsbuildinfo

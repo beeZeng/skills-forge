@@ -92,7 +92,9 @@ export async function replaceSkillIndex(skills: Skill[]): Promise<{ ok: boolean;
   if (!fn) return null
   try {
     return await fn({
-      skills: skills.filter((s) => s.origin !== 'created' && s.origin !== 'imported'),
+      skills: skills.filter((s) => s.origin !== 'created' && s.origin !== 'imported') as unknown as Array<
+        Record<string, unknown>
+      >,
       updatedAt: new Date().toISOString(),
     })
   } catch {

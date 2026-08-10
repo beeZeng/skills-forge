@@ -1,5 +1,8 @@
 import { ExternalLink, FolderCog, FolderOpen, RefreshCw } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { PathReveal } from '@/components/common/PathReveal'
+import { AgentLogo } from '@/components/hub/AgentLogo'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { useAppStore } from '@/stores/app-store'
 import { cn } from '@/lib/utils'
 import type { AgentInstallation } from '@/types'
@@ -85,7 +88,7 @@ function AgentPathEditor({
       </div>
       {agent.defaultSkillPath ? (
         <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-mesh-dim">
-          <span className="min-w-0 truncate">默认：{agent.defaultSkillPath}</span>
+          <PathReveal label="默认技能目录" path={agent.defaultSkillPath} compact className="min-w-0 flex-1" />
           <button
             type="button"
             className="shrink-0 text-mesh-accent hover:underline"
@@ -156,27 +159,27 @@ export function AgentsSettingsPage() {
 
   return (
     <div className="mx-auto max-w-[860px] space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">智能体配置</h1>
-          <p className="mt-1 text-sm text-mesh-dim">
-            发现本机智能体；已安装的可查看程序目录与 Skill 保存目录。勾选「安装 Skill 后自动同步至智能体」后，新安装的
-            Skill 会自动写入对应目录。
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={scanning}
-          className="inline-flex items-center gap-1.5 rounded-mesh border border-mesh-border px-3 py-2 text-sm hover:bg-mesh-card disabled:opacity-50"
-          onClick={() => {
-            setScanning(true)
-            void scanAgents().finally(() => setScanning(false))
-          }}
-        >
-          <RefreshCw className={cn('h-4 w-4', scanning && 'animate-spin')} />
-          重新扫描
-        </button>
-      </div>
+      <PageHeader
+        description="发现本机智能体，配置 Skill 自动同步目录"
+        actions={
+          <button
+            type="button"
+            disabled={scanning}
+            className="inline-flex items-center gap-1.5 rounded-mesh border border-mesh-border px-3 py-2 text-sm hover:bg-mesh-card disabled:opacity-50"
+            onClick={() => {
+              setScanning(true)
+              void scanAgents().finally(() => setScanning(false))
+            }}
+          >
+            <RefreshCw className={cn('h-4 w-4', scanning && 'animate-spin')} />
+            重新扫描
+          </button>
+        }
+      />
+
+      <p className="text-sm text-mesh-dim">
+        已检测到 {detectedCount} 个智能体。勾选「安装 Skill 后自动同步至智能体」后，新安装的 Skill 会自动写入对应目录。
+      </p>
 
       {restartRequired ? (
         <div className="rounded-mesh border border-mesh-warning/40 bg-mesh-warning/10 px-4 py-3 text-sm text-mesh-warning">
@@ -197,13 +200,16 @@ export function AgentsSettingsPage() {
           <div key={agent.id} className="rounded-mesh border border-mesh-border bg-mesh-card p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="inline-flex flex-wrap items-center gap-2 font-medium">
-                  <span
-                    className={cn(
-                      'h-2.5 w-2.5 shrink-0 rounded-full',
-                      agent.installed ? 'bg-mesh-success' : 'bg-mesh-dim',
-                    )}
-                  />
+                <div className="inline-flex flex-wrap items-center gap-2.5 font-medium">
+                  <span className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-mesh-panel ring-1 ring-mesh-border">
+                    <AgentLogo agentId={agent.id} className="h-[78%] w-[78%]" />
+                    <span
+                      className={cn(
+                        'absolute right-0.5 bottom-0.5 h-2 w-2 rounded-full ring-2 ring-mesh-card',
+                        agent.installed ? 'bg-mesh-success' : 'bg-mesh-dim',
+                      )}
+                    />
+                  </span>
                   <span>{agent.name}</span>
                   {agent.version ? (
                     <span className="rounded-md bg-mesh-panel px-1.5 py-0.5 font-mono text-[11px] font-normal text-mesh-muted">
@@ -212,18 +218,17 @@ export function AgentsSettingsPage() {
                   ) : null}
                 </div>
                 {agent.installed ? (
-                  <div className="mt-2 space-y-1.5 text-[11px]">
+                  <div className="mt-2 space-y-2 text-[11px]">
                     <div>
-                      <div className="text-mesh-dim">程序安装目录</div>
-                      <div className="mt-0.5 break-all font-mono text-mesh-muted">
-                        {agent.installPath || agent.executablePath || '未定位到可执行文件（通过配置目录发现）'}
-                      </div>
+                      <div className="mb-0.5 text-mesh-dim">程序安装目录</div>
+                      <PathReveal label="程序目录" path={agent.installPath || agent.executablePath} />
                     </div>
                     <div>
-                      <div className="text-mesh-dim">Skill 保存目录</div>
-                      <div className="mt-0.5 break-all font-mono text-mesh-muted">
-                        {agent.skillPath || agent.defaultSkillPath || '-'}
-                      </div>
+                      <div className="mb-0.5 text-mesh-dim">Skill 保存目录</div>
+                      <PathReveal
+                        label="技能目录"
+                        path={agent.skillPath || agent.defaultSkillPath}
+                      />
                       {agentPathOverrides[agent.id] ? (
                         <div className="mt-0.5 text-mesh-warning">已自定义路径（重启后生效）</div>
                       ) : null}

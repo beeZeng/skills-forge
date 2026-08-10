@@ -1,61 +1,48 @@
 import { useEffect, useState } from 'react'
+import { PathReveal } from '@/components/common/PathReveal'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { AppVersionPanel } from '@/components/settings/AppVersionPanel'
 import { useAppStore } from '@/stores/app-store'
 import { cn } from '@/lib/utils'
 import type { AppTheme } from '@/types'
 
-const THEMES: Array<{ id: AppTheme; label: string; desc: string; swatch: string; experimental?: boolean }> = [
+const THEMES: Array<{ id: AppTheme; label: string; desc: string; swatch: string; recommend?: boolean }> = [
+  {
+    id: 'deepspace',
+    label: '深空蓝紫',
+    desc: 'AI 控制中心 · OpenAI / Linear / Raycast',
+    swatch: 'linear-gradient(135deg,#080B16,#0F172A 45%,#6366F1 78%,#8B5CF6)',
+    recommend: true,
+  },
+  {
+    id: 'futurewhite',
+    label: '未来白',
+    desc: '专业 AI 工作台 · Apple / Notion / Claude',
+    swatch: 'linear-gradient(135deg,#F8FAFC,#FFFFFF 55%,#2563EB)',
+  },
+  {
+    id: 'obsidian',
+    label: '黑曜石电蓝',
+    desc: 'AI Runtime · 开发者工具感最强',
+    swatch: 'linear-gradient(135deg,#050505,#111111 50%,#3B82F6 78%,#00E5FF)',
+  },
+  {
+    id: 'aurora',
+    label: 'Aurora 极光',
+    desc: '下一代 AI 产品 · 渐变光晕与玻璃感',
+    swatch: 'linear-gradient(135deg,#0B1020,#2563EB 40%,#9333EA 70%,#06B6D4)',
+  },
+  {
+    id: 'verdant',
+    label: '墨绿科技',
+    desc: 'AI + 数据中心 · 差异化绿调',
+    swatch: 'linear-gradient(135deg,#071A16,#0F2922 50%,#10B981 78%,#22D3EE)',
+  },
   {
     id: 'system',
     label: '跟随系统',
-    desc: '与系统浅色 / 深色同步',
-    swatch: 'linear-gradient(135deg,#F4F5F5 0 50%,#111217 50% 100%)',
-  },
-  {
-    id: 'dark',
-    label: '深色',
-    desc: 'Grafana 默认深色',
-    swatch: 'linear-gradient(135deg,#111217,#181B1F 55%,#5794F2)',
-  },
-  {
-    id: 'light',
-    label: '浅色',
-    desc: 'Grafana 默认浅色',
-    swatch: 'linear-gradient(135deg,#F4F5F5,#FFFFFF 55%,#3D71D9)',
-  },
-  {
-    id: 'sapphiredusk',
-    label: '蓝暮',
-    desc: '深蓝暮色 · 青强调',
-    swatch: 'linear-gradient(135deg,#182036,#12192E 50%,#93EBF0)',
-    experimental: true,
-  },
-  {
-    id: 'tron',
-    label: '霓虹',
-    desc: '霓虹青 · 赛博面板',
-    swatch: 'linear-gradient(135deg,#0A0F18,#0F1B2A 50%,#00FFFF)',
-    experimental: true,
-  },
-  {
-    id: 'gildedgrove',
-    label: '金林',
-    desc: '墨绿底 · 金强调',
-    swatch: 'linear-gradient(135deg,#111614,#1D2220 50%,#FEAC34)',
-    experimental: true,
-  },
-  {
-    id: 'gloom',
-    label: '幽暗',
-    desc: '近黑底 · 琥珀强调',
-    swatch: 'linear-gradient(135deg,#000000,#121118 50%,#FF934D)',
-    experimental: true,
-  },
-  {
-    id: 'desertbloom',
-    label: '沙花',
-    desc: '暖沙浅色 · 珊瑚强调',
-    swatch: 'linear-gradient(135deg,#FFF8F0,#FFFFFF 50%,#FF6F61)',
-    experimental: true,
+    desc: '浅色跟随未来白 · 深色跟随深空蓝紫',
+    swatch: 'linear-gradient(135deg,#F8FAFC 0 50%,#080B16 50% 100%)',
   },
 ]
 
@@ -143,10 +130,9 @@ export function AdvancedSettingsPage() {
 
   return (
     <div className="mx-auto max-w-[760px] space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold">高级设置</h1>
-        <p className="mt-1 text-sm text-mesh-dim">主题与应用配置目录</p>
-      </div>
+      <PageHeader description="主题与应用配置" />
+
+      <AppVersionPanel />
 
       <section className="space-y-3 rounded-mesh border border-mesh-border bg-mesh-card p-4">
         <div>
@@ -173,9 +159,9 @@ export function AdvancedSettingsPage() {
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5">
                   <span className="block text-sm font-medium">{item.label}</span>
-                  {item.experimental ? (
-                    <span className="rounded px-1 py-0.5 text-[10px] font-medium tracking-wide text-mesh-warning ring-1 ring-mesh-warning/40">
-                      实验
+                  {item.recommend ? (
+                    <span className="rounded px-1 py-0.5 text-[10px] font-medium tracking-wide text-mesh-accent ring-1 ring-mesh-accent/40">
+                      推荐
                     </span>
                   ) : null}
                 </span>
@@ -203,8 +189,8 @@ export function AdvancedSettingsPage() {
                 <div className="min-w-0">
                   <div className="text-sm font-medium">应用配置</div>
                   <div className="mt-0.5 text-xs text-mesh-dim">账号会话、技能源、主题等</div>
-                  <div className="mt-1.5 break-all font-mono text-xs text-mesh-muted">
-                    {paths?.dataRootDisplay || (paths?.dataRoot ? '…' : '读取中…')}
+                  <div className="mt-1.5">
+                    <PathReveal label="配置目录" path={paths?.dataRootDisplay || paths?.dataRoot} />
                   </div>
                 </div>
                 <div className="flex shrink-0 gap-1.5">

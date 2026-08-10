@@ -1,8 +1,9 @@
 import { Link } from 'react-router-dom'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Search } from 'lucide-react'
 import { useEffect } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { CatalogRefreshButton, CatalogSyncBar } from '@/components/CatalogSyncBar'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { SkillCard } from '@/components/skill/SkillCard'
 import { CATEGORY_CHIPS, selectFilteredSkills, useAppStore } from '@/stores/app-store'
 import { cn } from '@/lib/utils'
@@ -36,12 +37,15 @@ export function DiscoverPage() {
   const updateSelected = useAppStore((s) => s.updateSelected)
   const clearSelection = useAppStore((s) => s.clearSelection)
   const refreshCatalog = useAppStore((s) => s.refreshCatalog)
+  const ensureCatalogFresh = useAppStore((s) => s.ensureCatalogFresh)
   const resetDiscoverFilters = useAppStore((s) => s.resetDiscoverFilters)
   const catalogSyncing = useAppStore((s) => s.catalogSyncing)
   const catalogSyncMessage = useAppStore((s) => s.catalogSyncMessage)
   const lastCatalogSyncedAt = useAppStore((s) => s.lastCatalogSyncedAt)
   const hydrated = useAppStore((s) => s.hydrated)
   const updateCount = useAppStore((s) => s.skills.reduce((n, x) => n + (x.updateAvailable ? 1 : 0), 0))
+  const discoverSearchQuery = useAppStore((s) => s.discoverSearchQuery)
+  const setDiscoverSearchQuery = useAppStore((s) => s.setDiscoverSearchQuery)
   const enabledSources = sources.filter((s) => s.id !== 'local' && s.enabled)
   const connectedSources = enabledSources.filter((s) => s.status === 'connected')
 
@@ -49,19 +53,19 @@ export function DiscoverPage() {
     if ((discoverTab as string) === 'import') setDiscoverTab('recommended')
   }, [discoverTab, setDiscoverTab])
 
-  // Every time Discover mounts (including switching back from other modules), refresh catalog.
+  // Prefer Skill Index bootstrap; Discover only refreshes when stale.
   useEffect(() => {
     if (!hydrated) return
-    void refreshCatalog({ force: true }).catch(() => undefined)
-  }, [hydrated, refreshCatalog])
+    void ensureCatalogFresh().catch(() => undefined)
+  }, [hydrated, ensureCatalogFresh])
 
   const neverSynced = !lastCatalogSyncedAt
   const emptyHint = (() => {
     if (!enabledSources.length) {
       return {
         title: '还没有可用的技能平台',
-        desc: '请先在「技能源配置」中添加并启用平台，再刷新列表。',
-        cta: { to: '/settings/sources', label: '去技能源配置' },
+        desc: '请先在「技能来源」中添加并启用平台，再刷新列表。',
+        cta: { to: '/settings/sources', label: '去技能来源' },
       }
     }
     if (neverSynced && !catalogSyncing) {
@@ -74,8 +78,8 @@ export function DiscoverPage() {
     if (!connectedSources.length) {
       return {
         title: '技能平台尚未连接',
-        desc: catalogSyncMessage || '请在「技能源配置」中测试连接并刷新列表。',
-        cta: { to: '/settings/sources', label: '去技能源配置' },
+        desc: catalogSyncMessage || '请在「技能来源」中测试连接并刷新列表。',
+        cta: { to: '/settings/sources', label: '去技能来源' },
       }
     }
     if (sourceFilter !== 'all' || categoryFilter !== '全部' || statusFilter !== 'all' || discoverTab === 'favorites') {
@@ -93,10 +97,10 @@ export function DiscoverPage() {
   })()
 
   return (
-    <div className="relative mx-auto min-h-[calc(100vh-7rem)] max-w-[1200px] space-y-4">
+    <div className="relative space-y-5">
       {catalogSyncing ? (
-        <div className="absolute inset-0 z-30 flex items-center justify-center rounded-mesh bg-mesh-bg/70 backdrop-blur-[2px]">
-          <div className="flex flex-col items-center gap-3 rounded-mesh border border-mesh-border bg-mesh-panel px-8 py-6 shadow-mesh">
+        <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl bg-mesh-bg/70 backdrop-blur-[2px]">
+          <div className="flex flex-col items-center gap-3 rounded-xl border border-mesh-border bg-mesh-panel px-8 py-6 shadow-mesh">
             <Loader2 className="h-8 w-8 animate-spin text-mesh-accent" />
             <div className="text-sm font-medium text-mesh-text">
               {catalogSyncMessage || '正在加载技能列表…'}
@@ -106,37 +110,55 @@ export function DiscoverPage() {
         </div>
       ) : null}
 
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">发现</h1>
-          <p className="mt-1 text-sm text-mesh-dim">
-            {catalogSyncMessage ||
-              (lastCatalogSyncedAt
-                ? `从已连接技能源发现 Skill · 上次刷新 ${new Date(lastCatalogSyncedAt).toLocaleString()}`
-                : '从已连接的技能源发现并安装 Skill')}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <CatalogRefreshButton
-            busy={catalogSyncing}
-            onClick={() => void refreshCatalog({ force: true })}
-          />
-          <button
-            type="button"
-            disabled={catalogSyncing}
-            onClick={() => setBatchMode(!batchMode)}
-            className="rounded-mesh border border-mesh-border px-3 py-1.5 text-xs text-mesh-muted hover:bg-mesh-card disabled:pointer-events-none disabled:opacity-50"
-          >
-            {batchMode ? '退出批量' : '批量管理'}
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        description="探索来自不同来源的 AI Agent 能力"
+        meta={
+          <>
+            <span className="rounded-full bg-mesh-panel px-2.5 py-1 text-xs text-mesh-dim ring-1 ring-mesh-border">
+              技能 {skills.length}
+            </span>
+            <span className="rounded-full bg-mesh-panel px-2.5 py-1 text-xs text-mesh-dim ring-1 ring-mesh-border">
+              来源 {connectedSources.length}/{enabledSources.length}
+            </span>
+            {updateCount ? (
+              <span className="rounded-full bg-mesh-warning/10 px-2.5 py-1 text-xs text-mesh-warning ring-1 ring-mesh-warning/25">
+                可更新 {updateCount}
+              </span>
+            ) : null}
+          </>
+        }
+        actions={
+          <>
+            <div className="flex w-full max-w-xs items-center gap-2 rounded-xl border border-mesh-border bg-mesh-panel px-3 py-2 sm:w-64">
+              <Search className="h-4 w-4 shrink-0 text-mesh-dim" />
+              <input
+                value={discoverSearchQuery}
+                onChange={(e) => setDiscoverSearchQuery(e.target.value)}
+                placeholder="搜索技能、工具"
+                className="w-full bg-transparent text-sm outline-none placeholder:text-mesh-dim"
+              />
+            </div>
+            <CatalogRefreshButton
+              busy={catalogSyncing}
+              onClick={() => void refreshCatalog({ force: true })}
+            />
+            <button
+              type="button"
+              disabled={catalogSyncing}
+              onClick={() => setBatchMode(!batchMode)}
+              className="rounded-xl border border-mesh-border px-3 py-1.5 text-xs text-mesh-muted hover:bg-mesh-card disabled:pointer-events-none disabled:opacity-50"
+            >
+              {batchMode ? '退出批量' : '批量管理'}
+            </button>
+          </>
+        }
+      />
 
       <CatalogSyncBar active={catalogSyncing} message={catalogSyncMessage} />
 
       <div
         className={cn(
-          'flex flex-wrap gap-1 rounded-mesh border border-mesh-border bg-mesh-panel p-1',
+          'flex flex-wrap gap-2',
           catalogSyncing && 'pointer-events-none opacity-60',
         )}
       >
@@ -147,8 +169,10 @@ export function DiscoverPage() {
             disabled={catalogSyncing}
             onClick={() => setDiscoverTab(tab.id)}
             className={cn(
-              'rounded-md px-3 py-1.5 text-sm transition-colors',
-              discoverTab === tab.id ? 'bg-mesh-accentSoft text-mesh-text' : 'text-mesh-muted hover:text-mesh-text',
+              'ws-pill',
+              discoverTab === tab.id
+                ? 'bg-mesh-accent text-white'
+                : 'bg-mesh-panel text-mesh-muted ring-1 ring-mesh-border hover:text-mesh-text',
             )}
           >
             {tab.label}

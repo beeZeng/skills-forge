@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { CatalogRefreshButton, CatalogSyncBar } from '@/components/CatalogSyncBar'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { PANGU_HUB_SOURCE_ID } from '@/constants/pangu'
 import { useAppStore } from '@/stores/app-store'
 import { cn } from '@/lib/utils'
@@ -31,6 +32,15 @@ export function SourcesSettingsPage() {
   const connectDiscoveredHub = useAppStore((s) => s.connectDiscoveredHub)
   const discoverPanguHub = useAppStore((s) => s.discoverPanguHub)
   const setLoginOpen = useAppStore((s) => s.setLoginOpen)
+  const allSkills = useAppStore((s) => s.skills)
+  const skillCountBySource = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const skill of allSkills) {
+      if (skill.origin === 'created' || skill.origin === 'imported') continue
+      map.set(skill.sourceId, (map.get(skill.sourceId) || 0) + 1)
+    }
+    return map
+  }, [allSkills])
   const failedSourceCount = useMemo(
     () => sources.filter((s) => s.enabled && !!s.lastSyncError).length,
     [sources],
@@ -70,49 +80,46 @@ export function SourcesSettingsPage() {
 
   return (
     <div className="mx-auto max-w-[860px] space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">技能源配置</h1>
-          <p className="mt-1 text-sm text-mesh-dim">
-            登录后可一键连接盘古 Hub（多命名空间挂在同一源）。未登录仅看公共技能；「刷新列表」与「同步到智能体」是两件事。
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {failedSourceCount > 0 ? (
+      <PageHeader
+        description="管理 Skill Provider · 登录后可一键连接盘古 Hub"
+        actions={
+          <>
+            {failedSourceCount > 0 ? (
+              <button
+                type="button"
+                disabled={catalogSyncing}
+                onClick={() => void retryFailedSources()}
+                className="rounded-mesh border border-mesh-danger/40 px-3 py-2 text-sm text-mesh-danger hover:bg-mesh-card disabled:pointer-events-none disabled:opacity-50"
+              >
+                {catalogSyncing ? '刷新中…' : `重试失败源（${failedSourceCount}）`}
+              </button>
+            ) : null}
+            <CatalogRefreshButton
+              busy={catalogSyncing}
+              size="md"
+              label="立即同步"
+              busyLabel="同步中…"
+              onClick={() => void refreshCatalog({ force: true })}
+            />
             <button
               type="button"
               disabled={catalogSyncing}
-              onClick={() => void retryFailedSources()}
-              className="rounded-mesh border border-mesh-danger/40 px-3 py-2 text-sm text-mesh-danger hover:bg-mesh-card disabled:pointer-events-none disabled:opacity-50"
+              onClick={openCreate}
+              className="rounded-mesh bg-mesh-accent px-3 py-2 text-sm text-white disabled:pointer-events-none disabled:opacity-50"
             >
-              {catalogSyncing ? '刷新中…' : `重试失败源（${failedSourceCount}）`}
+              + 添加源
             </button>
-          ) : null}
-          <CatalogRefreshButton
-            busy={catalogSyncing}
-            size="md"
-            label="刷新全部列表"
-            busyLabel="刷新中…"
-            onClick={() => void refreshCatalog({ force: true })}
-          />
-          <button
-            type="button"
-            disabled={catalogSyncing}
-            onClick={openCreate}
-            className="rounded-mesh bg-mesh-accent px-3 py-2 text-sm text-white disabled:pointer-events-none disabled:opacity-50"
-          >
-            + 添加源
-          </button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <CatalogSyncBar active={catalogSyncing} message={catalogSyncMessage} />
 
       {!lastCatalogSyncedAt && !catalogSyncing ? (
         <div className="rounded-mesh border border-mesh-accent/35 bg-mesh-accentSoft/40 px-4 py-3 text-sm">
-          <div className="font-medium text-mesh-text">技能列表尚未同步</div>
+          <div className="font-medium text-mesh-text">Skill 索引尚未建立</div>
           <p className="mt-1 text-xs text-mesh-dim">
-            每次进入「发现」会自动拉取；也可在此点击「刷新全部列表」手动同步。
+            首页启动时会自动同步；也可在此点击「立即同步」手动拉取。
           </p>
         </div>
       ) : null}
@@ -219,6 +226,19 @@ export function SourcesSettingsPage() {
                   ) : null}
                 </div>
                 <div className="mt-1 text-xs text-mesh-dim">{source.registryUrl || '本地离线源'}</div>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-mesh-muted">
+                  <span className="font-medium text-mesh-text">
+                    {skillCountBySource.get(source.id) || 0} Skills
+                  </span>
+                  <span>
+                    最近同步：
+                    {source.lastSyncedAt
+                      ? new Date(source.lastSyncedAt).toLocaleString()
+                      : lastCatalogSyncedAt
+                        ? new Date(lastCatalogSyncedAt).toLocaleString()
+                        : '尚未同步'}
+                  </span>
+                </div>
                 <div className="mt-2 inline-flex items-center gap-1.5 text-xs">
                   <span
                     className={cn(

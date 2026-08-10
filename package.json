@@ -18,8 +18,10 @@
     "dist:mac": "npm run build && electron-builder --mac dmg --arm64 --x64",
     "dist:mac:arm64": "npm run build && electron-builder --mac dmg --arm64",
     "dist:mac:x64": "npm run build && electron-builder --mac dmg --x64",
-    "dist:win": "npm run build && electron-builder --win nsis --x64",
-    "dist:all": "npm run build && electron-builder --mac dmg --arm64 --x64 --win nsis --x64",
+    "dist:win": "npm run build && electron-builder --win nsis msi --x64",
+    "dist:win:nsis": "npm run build && electron-builder --win nsis --x64",
+    "dist:win:msi": "npm run build && electron-builder --win msi --x64",
+    "dist:all": "npm run build && electron-builder --mac dmg --arm64 --x64 --win nsis msi --x64",
     "open:app": "open \"dist-electron/mac-arm64/Nexus.app\" || open \"dist-electron/mac/Nexus.app\"",
     "open:dmg": "open dist-electron/*.dmg"
   },
@@ -28,7 +30,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.6.0",
-    "zustand": "^5.0.5"
+    "zustand": "^5.0.5",
+    "jszip": "3.10.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
@@ -100,15 +103,33 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "msi",
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Nexus"
+      "shortcutName": "Nexus",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "include": "build/installer.nsh"
+    },
+    "msi": {
+      "oneClick": false,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
     }
   }
 }

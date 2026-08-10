@@ -1,6 +1,36 @@
 /// <reference types="vite/client" />
 import type { AgentInstallation, AppAccount, PersistedUiState, SkillSource, SourceNamespace } from '@/types'
 
+export type PublishPrepareResult = {
+  ok: boolean
+  error?: string
+  message?: string
+  errors?: string[]
+  warnings?: string[]
+  needsEntrySelection?: boolean
+  ready?: boolean
+  kind?: 'standard' | 'ordinary'
+  sessionId?: string
+  sessionDir?: string
+  extractDir?: string
+  packageDir?: string
+  zipPath?: string
+  zipHash?: string
+  zipBytes?: number
+  zipName?: string
+  rootName?: string
+  entry?: string
+  entryCandidates?: string[]
+  suggestedName?: string
+  manifest?: import('@/types').SkillManifest
+  readme?: string
+  skillMd?: string
+  fileTree?: import('@/types').SkillPackageFileNode[]
+  files?: string[]
+  contentHash?: string
+  installTarget?: string
+}
+
 export interface SkillMeshApi {
   platform: string
   versions: { electron?: string; chrome?: string; node?: string }
@@ -10,6 +40,7 @@ export interface SkillMeshApi {
   }
   dialog: {
     openSkillPackage: () => Promise<string | null>
+    openPublishZip: () => Promise<string | null>
     openDirectory: (payload?: { title?: string; defaultPath?: string }) => Promise<string | null>
     confirm: (payload: { title?: string; message?: string; detail?: string }) => Promise<boolean>
     restartPrompt: (payload: {
@@ -17,6 +48,16 @@ export interface SkillMeshApi {
       message?: string
       detail?: string
     }) => Promise<'relaunch' | 'later'>
+    skillConflict: (payload: {
+      title?: string
+      message?: string
+      detail?: string
+      conflict?: 'hash_mismatch' | 'version_update' | string
+      skill_id?: string
+      version?: string
+      existing?: unknown
+      incoming?: { skill_id?: string; name?: string; version?: string; hash?: string; source?: string }
+    }) => Promise<{ resolution: 'overwrite' | 'update' | 'keep' | 'cancel' }>
   }
   shell: {
     openPath: (targetPath: string) => Promise<{ ok: boolean; error?: string }>
@@ -54,12 +95,14 @@ export interface SkillMeshApi {
         sourceName?: string
         namespace?: string
         localPath?: string
+        agentInstallPath?: string
       }
       agentSkillPath: string
     }) => Promise<{ ok: boolean; error?: string; destPath?: string }>
   }
   skills: {
     ensurePackage: (skill: {
+      uid?: string
       skillId: string
       name: string
       description?: string
@@ -78,6 +121,11 @@ export interface SkillMeshApi {
       origin?: import('@/types').Skill['origin']
       forceFetch?: boolean
       contentHash?: string
+      author?: string
+      tags?: string[]
+      license?: string
+      conflictResolution?: 'overwrite' | 'update' | 'keep' | 'cancel'
+      skipAgentInstall?: boolean
     }) => Promise<{
       ok: boolean
       localPath?: string
@@ -85,8 +133,32 @@ export interface SkillMeshApi {
       contentFetched?: boolean
       contentSource?: string
       contentHash?: string
+      zipPath?: string
+      zipHash?: string
+      agentInstallPath?: string
+      manifest?: import('@/types').SkillManifest
+      conflict?: 'hash_mismatch'
+      cancelled?: boolean
+      existing?: {
+        skill_id?: string
+        name?: string
+        version?: string
+        hash?: string
+        source?: string
+      }
+      incoming?: {
+        skill_id?: string
+        name?: string
+        version?: string
+        hash?: string
+        source?: string
+      }
     }>
-    removePackage: (localPath: string) => Promise<{ ok: boolean }>
+    removePackage: (
+      localPath:
+        | string
+        | { localPath?: string; name?: string; skillName?: string; skill_id?: string; skillId?: string },
+    ) => Promise<{ ok: boolean }>
     verifyPackage: (payload: {
       localPath?: string
       contentHash?: string
@@ -102,6 +174,7 @@ export interface SkillMeshApi {
       contentHash?: string
       hashMatches?: boolean
       error?: string
+      manifest?: import('@/types').SkillManifest
     }>
     verifyPackages: (
       items: Array<{
@@ -150,6 +223,103 @@ export interface SkillMeshApi {
       isStub?: boolean
       error?: string
     }>
+    installToAgent: (payload: {
+      zipPath: string
+      expectedHash?: string
+      zipHash?: string
+      sourceId?: string
+      skillUid?: string
+      force?: boolean
+    }) => Promise<{
+      ok: boolean
+      error?: string
+      installPath?: string
+      zipHash?: string
+      manifest?: import('@/types').SkillManifest
+    }>
+    uninstallFromAgent: (payload: { name?: string; skillName?: string }) => Promise<{
+      ok: boolean
+      error?: string
+      removedPath?: string
+    }>
+    readPackageMeta: (payload: {
+      localPath?: string
+      agentInstallPath?: string
+      name?: string
+    }) => Promise<{
+      ok: boolean
+      error?: string
+      path?: string
+      absolutePath?: string
+      manifest?: import('@/types').SkillManifest | null
+      readme?: string
+      fileTree?: import('@/types').SkillPackageFileNode[]
+    }>
+    listPackageTree: (payload: {
+      localPath?: string
+      agentInstallPath?: string
+      name?: string
+    }) => Promise<{
+      ok: boolean
+      error?: string
+      path?: string
+      fileTree?: import('@/types').SkillPackageFileNode[]
+    }>
+    listAgentInstalled: () => Promise<{
+      ok: boolean
+      skills: Array<{
+        name: string
+        version: string
+        installedAt?: string
+        install_time?: string
+        contentHash?: string
+        hash?: string
+        installPath?: string
+        install_path?: string
+        skill_id?: string
+        source?: string
+        status?: string
+      }>
+      root?: string
+      registryPath?: string
+      stats?: Record<string, number>
+    }>
+    scanLocal: (payload?: { forceFull?: boolean }) => Promise<{
+      ok: boolean
+      skills: Array<{
+        skill_id: string
+        name: string
+        version: string
+        source: string
+        status?: string
+        install_path?: string
+        hash?: string
+      }>
+      root?: string
+      registryPath?: string
+      stats?: Record<string, number>
+    }>
+    getRegistry: () => Promise<{
+      ok: boolean
+      skills: Array<Record<string, unknown>>
+      root?: string
+      registryPath?: string
+      registry?: { version?: number; scannedAt?: string | null; skills?: Record<string, unknown> }
+    }>
+    resolveConflict: (payload: {
+      zipPath: string
+      expectedHash?: string
+      zipHash?: string
+      sourceId?: string
+      skillUid?: string
+      conflictResolution?: 'overwrite' | 'update' | 'keep' | 'cancel'
+      skillMeta?: Record<string, unknown>
+    }) => Promise<{
+      ok: boolean
+      error?: string
+      installPath?: string
+      manifest?: import('@/types').SkillManifest
+    }>
     packZip: (payload: {
       skill: {
         skillId: string
@@ -160,8 +330,12 @@ export interface SkillMeshApi {
         sourceName?: string
         namespace?: string
         localPath?: string
+        agentInstallPath?: string
         content?: string
+        zipPath?: string
+        author?: string
         origin?: import('@/types').Skill['origin']
+        manifest?: import('@/types').SkillManifest
       }
       version?: string
     }) => Promise<{
@@ -169,9 +343,41 @@ export interface SkillMeshApi {
       zipPath?: string
       version?: string
       name?: string
-      tmpDir?: string
+      tmpDir?: string | null
+      localPath?: string
+      reusedZip?: boolean
       error?: string
     }>
+    preparePublish: (payload: {
+      zipPath: string
+      username?: string
+      userId?: string
+      author?: string
+      displayName?: string
+      name?: string
+      description?: string
+      version?: string
+      entry?: string
+      existingSkillIds?: string[]
+      maxZipBytes?: number
+      maxFileBytes?: number
+    }) => Promise<PublishPrepareResult>
+    finalizePublish: (payload: {
+      sessionDir?: string
+      sessionId?: string
+      extractDir?: string
+      kind?: 'standard' | 'ordinary'
+      entry?: string
+      entryCandidates?: string[]
+      username?: string
+      author?: string
+      name?: string
+      description?: string
+      version?: string
+      existingSkillIds?: string[]
+      warnings?: string[]
+    }) => Promise<PublishPrepareResult>
+    cleanupPublish: (payload: { sessionDir?: string; sessionId?: string }) => Promise<{ ok: boolean }>
   }
   hub: {
     publish: (payload: {
@@ -181,9 +387,11 @@ export interface SkillMeshApi {
       zipPath: string
       confirmWarnings?: boolean
       tmpDir?: string
+      sessionDir?: string
     }) => Promise<{
       ok: boolean
       message?: string
+      status?: number
       confirmRequired?: boolean
       serverMessage?: string
       result?: {
@@ -250,7 +458,7 @@ export interface SkillMeshApi {
       password: string
     }) => Promise<{ ok: boolean; message?: string; account?: AppAccount }>
     logout: (payload: { baseUrl?: string }) => Promise<{ ok: boolean }>
-    me: (payload: { baseUrl: string }) => Promise<{
+    me: (payload: { baseUrl: string; persistTtlMs?: number }) => Promise<{
       ok: boolean
       loggedIn: boolean
       message?: string
@@ -275,6 +483,10 @@ export interface SkillMeshApi {
       skillsRootDefaultDisplay?: string
       stateFile?: string
       stateFileDisplay?: string
+      programPath?: string
+      programPathDisplay?: string
+      userDataPath?: string
+      userDataPathDisplay?: string
     }>
     setSkillsRoot: (payload: { path: string }) => Promise<{
       ok: boolean
@@ -297,6 +509,73 @@ export interface SkillMeshApi {
       usedBytes?: number
       skillsUsedBytes?: number
     }>
+    getVersionInfo: () => Promise<{
+      ok: boolean
+      current?: string
+      currentValid?: boolean
+      latest?: string | null
+      notes?: string
+      publishedAt?: string | null
+      updateAvailable?: boolean
+      lastCheckedAt?: string | null
+      feedUrl?: string
+      platform?: string
+      pendingInstall?: {
+        version?: string
+        installerPath?: string
+        downloadedAt?: string
+        size?: number
+      } | null
+      canRollback?: boolean
+      lastGoodVersion?: string | null
+      programPath?: string
+      userDataPath?: string
+      dataRoot?: string
+    }>
+    checkUpdate: (payload?: { force?: boolean }) => Promise<{
+      ok: boolean
+      current?: string
+      latest?: string | null
+      notes?: string
+      publishedAt?: string | null
+      updateAvailable?: boolean
+      downloadUrl?: string | null
+      platform?: string
+      skipped?: boolean
+      message?: string
+      error?: string
+    }>
+    downloadUpdate: (payload?: { url?: string; version?: string }) => Promise<{
+      ok: boolean
+      version?: string
+      installerPath?: string
+      size?: number
+      error?: string
+    }>
+    installUpdate: () => Promise<{
+      ok: boolean
+      message?: string
+      error?: string
+      targetVersion?: string
+      canRollback?: boolean
+    }>
+    rollbackUpdate: () => Promise<{
+      ok: boolean
+      message?: string
+      error?: string
+      version?: string
+    }>
+    setUpdateFeedUrl: (payload: { url: string }) => Promise<{ ok: boolean; url?: string }>
+    getPendingApplyStatus: () => Promise<{
+      ok: boolean
+      pending?: boolean
+      applied?: boolean
+      version?: string
+      expected?: string
+      current?: string
+      canRollback?: boolean
+      message?: string
+    }>
   }
   logs: {
     getInfo: () => Promise<{
@@ -316,6 +595,120 @@ export interface SkillMeshApi {
     }) => Promise<{ ok: boolean; file?: string; error?: string }>
     purge: () => Promise<{ ok: boolean; removed?: string[] }>
     openDir: () => Promise<{ ok: boolean; error?: string; path?: string; pathDisplay?: string }>
+  }
+  analytics: {
+    getStats: (payload: Record<string, unknown>) => Promise<{
+      ok: boolean
+      error?: string
+      counted?: boolean
+      reason?: string
+      skill_id?: string
+      views?: number
+      favorites?: number
+      downloads?: number
+      installs?: number
+      usage?: number
+      score?: number
+      recentGrowth?: number
+      badges?: Array<'new' | 'editor' | 'fast_growth' | 'hot'>
+      favorited?: boolean
+    }>
+    getBulkStats: (payload: {
+      items: Array<Record<string, unknown>>
+      userId?: string
+    }) => Promise<{
+      ok: boolean
+      stats?: Record<string, {
+        views?: number
+        favorites?: number
+        downloads?: number
+        installs?: number
+        usage?: number
+        score?: number
+        recentGrowth?: number
+        badges?: Array<'new' | 'editor' | 'fast_growth' | 'hot'>
+        favorited?: boolean
+      }>
+    }>
+    recordView: (payload: Record<string, unknown>) => Promise<{
+      ok: boolean
+      counted?: boolean
+      views?: number
+      favorites?: number
+      downloads?: number
+      installs?: number
+      usage?: number
+      score?: number
+      badges?: Array<'new' | 'editor' | 'fast_growth' | 'hot'>
+    }>
+    favorite: (payload: Record<string, unknown>) => Promise<{
+      ok: boolean
+      favorited?: boolean
+      favorites?: number
+      views?: number
+      downloads?: number
+      installs?: number
+      usage?: number
+      score?: number
+      badges?: Array<'new' | 'editor' | 'fast_growth' | 'hot'>
+    }>
+    unfavorite: (payload: Record<string, unknown>) => Promise<{
+      ok: boolean
+      favorited?: boolean
+      favorites?: number
+      views?: number
+      downloads?: number
+      installs?: number
+      usage?: number
+      score?: number
+      badges?: Array<'new' | 'editor' | 'fast_growth' | 'hot'>
+    }>
+    recordDownload: (payload: Record<string, unknown>) => Promise<{
+      ok: boolean
+      counted?: boolean
+      downloads?: number
+      installs?: number
+      views?: number
+      favorites?: number
+      usage?: number
+      score?: number
+      badges?: Array<'new' | 'editor' | 'fast_growth' | 'hot'>
+    }>
+    recordInstall: (payload: Record<string, unknown>) => Promise<{
+      ok: boolean
+      counted?: boolean
+      installs?: number
+      downloads?: number
+      views?: number
+      favorites?: number
+      usage?: number
+      score?: number
+      badges?: Array<'new' | 'editor' | 'fast_growth' | 'hot'>
+    }>
+    recordUsage: (payload: Record<string, unknown>) => Promise<{
+      ok: boolean
+      counted?: boolean
+      usage?: number
+    }>
+    listPending: () => Promise<{ ok: boolean; pending?: Array<Record<string, unknown>> }>
+    clearPending: (payload?: { ids?: string[] }) => Promise<{ ok: boolean; remaining?: number }>
+  }
+  skillIndex: {
+    getMeta: () => Promise<{ ok: boolean; exists?: boolean; count?: number; updatedAt?: string | null }>
+    readAll: () => Promise<{
+      ok: boolean
+      updatedAt?: string | null
+      count?: number
+      skills?: Array<Record<string, unknown>>
+    }>
+    replaceAll: (payload: {
+      skills: Array<Record<string, unknown>>
+      updatedAt?: string
+    }) => Promise<{ ok: boolean; count?: number; updatedAt?: string }>
+    search: (payload: {
+      query?: string
+      limit?: number
+    }) => Promise<{ ok: boolean; skills?: Array<Record<string, unknown>>; total?: number }>
   }
 }
 

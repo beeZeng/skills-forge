@@ -2,6 +2,9 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const crypto = require('crypto')
+const { normalizeSkillPackage } = require('./normalize-package.cjs')
+const { zipDirectory, hashFile } = require('./zip-fs.cjs')
+const { zipFileName, slugifySkillName, readManifestFile, buildSkillId, writeManifestFile } = require('./manifest.cjs')
 
 function expandPath(input, homeDir = os.homedir()) {
   if (!input || typeof input !== 'string') return ''
@@ -112,13 +115,30 @@ function hashPackageDir(dir) {
   return hash.digest('hex')
 }
 
+function findSkillMdPath(skillPath) {
+  for (const name of ['skill.md', 'SKILL.md']) {
+    const file = path.join(skillPath, name)
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) return file
+  }
+  return null
+}
+
+function getZipCacheDir(skillsRoot) {
+  return path.join(skillsRoot || getDefaultSkillsRoot(), 'cache', 'zips')
+}
+
+function buildZipCachePath(skillsRoot, skillMeta = {}) {
+  const version = skillMeta.version || skillMeta.latestVersion || '1.0.0'
+  return path.join(getZipCacheDir(skillsRoot), zipFileName(skillMeta, version))
+}
+
 /**
- * Write skill package. Catalog skills require non-stub content.
- * @returns {{ ok: boolean, contentHash?: string, isStub?: boolean, error?: string }}
+ * Write skill package in standard layout + optional zip cache.
+ * Catalog skills require non-stub content.
+ * @returns {{ ok: boolean, contentHash?: string, isStub?: boolean, error?: string, zipPath?: string, zipHash?: string, manifest?: object }}
  */
 function ensureSkillPackage(skillPath, skillMeta = {}) {
   fs.mkdirSync(skillPath, { recursive: true })
-  const skillMd = path.join(skillPath, 'SKILL.md')
   const local = isLocalOrigin(skillMeta)
   const provided =
     typeof skillMeta.content === 'string' && skillMeta.content.trim() ? skillMeta.content : ''
@@ -135,51 +155,98 @@ function ensureSkillPackage(skillPath, skillMeta = {}) {
   }
 
   const content = provided || stub
-  if (!fs.existsSync(skillMd) || provided) {
-    fs.writeFileSync(skillMd, content, 'utf8')
+  const normalized = normalizeSkillPackage(
+    skillPath,
+    {
+      ...skillMeta,
+      content,
+      author: skillMeta.author || skillMeta.sourceName || 'unknown',
+      skill_id: skillMeta.skill_id || buildSkillId(skillMeta),
+      skillId: skillMeta.skillId || skillMeta.skill_id || buildSkillId(skillMeta),
+      source: skillMeta.source || skillMeta.sourceId || 'local',
+      sourceId: skillMeta.sourceId || skillMeta.source || 'local',
+    },
+    { writeSkillJson: true },
+  )
+  if (!normalized.ok) {
+    return { ok: false, error: normalized.error || '规范化 Skill 包失败', isStub: true }
   }
 
-  if (Array.isArray(skillMeta.files)) {
-    for (const file of skillMeta.files) {
-      if (!file?.relativePath) continue
-      const rel = String(file.relativePath).replace(/\\/g, '/').replace(/^\/+/, '')
-      if (!rel || rel.includes('..') || /^SKILL\.md$/i.test(rel)) continue
-      const dest = path.join(skillPath, ...rel.split('/'))
-      fs.mkdirSync(path.dirname(dest), { recursive: true })
-      if (Buffer.isBuffer(file.content)) fs.writeFileSync(dest, file.content)
-      else fs.writeFileSync(dest, String(file.content ?? ''), 'utf8')
-    }
-  }
-
+  const skillMd = findSkillMdPath(skillPath)
   const contentHash = hashPackageDir(skillPath)
   const isStub = isStubSkillMarkdown(
-    fs.existsSync(skillMd) ? fs.readFileSync(skillMd, 'utf8') : content,
+    skillMd ? fs.readFileSync(skillMd, 'utf8') : content,
     skillMeta,
   )
 
-  const manifest = path.join(skillPath, 'skill.json')
-  fs.writeFileSync(
-    manifest,
-    JSON.stringify(
-      {
-        name: skillMeta.name,
-        skillId: skillMeta.skillId,
-        version: skillMeta.version,
-        sourceId: skillMeta.sourceId,
-        namespace: skillMeta.namespace || 'default',
-        homepageUrl: skillMeta.homepageUrl,
-        packageSource: skillMeta.packageSource,
-        contentSource: skillMeta.contentSource,
-        contentHash,
-        installedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-    'utf8',
-  )
+  // Persist hash into manifest.json (Phase 1)
+  try {
+    writeManifestFile(skillPath, {
+      ...(normalized.manifest || {}),
+      ...skillMeta,
+      skill_id: normalized.manifest?.skill_id || buildSkillId(skillMeta),
+      hash: contentHash,
+    })
+  } catch {
+    // ignore
+  }
 
-  return { ok: true, contentHash, isStub }
+  // Refresh skill.json with contentHash
+  const skillJsonPath = path.join(skillPath, 'skill.json')
+  try {
+    const prev = fs.existsSync(skillJsonPath) ? JSON.parse(fs.readFileSync(skillJsonPath, 'utf8')) : {}
+    fs.writeFileSync(
+      skillJsonPath,
+      JSON.stringify(
+        {
+          ...prev,
+          ...(normalized.manifest || {}),
+          skillId: skillMeta.skillId || prev.skillId || slugifySkillName(skillMeta.name),
+          sourceId: skillMeta.sourceId,
+          namespace: skillMeta.namespace || 'default',
+          homepageUrl: skillMeta.homepageUrl,
+          packageSource: skillMeta.packageSource,
+          contentSource: skillMeta.contentSource,
+          contentHash,
+          hash: contentHash,
+          installedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+  } catch {
+    // ignore bookkeeping errors
+  }
+
+  const refreshed = readManifestFile(skillPath)
+  return {
+    ok: true,
+    contentHash,
+    isStub,
+    manifest: refreshed.ok ? refreshed.manifest : normalized.manifest,
+  }
+}
+
+/**
+ * Build {name}-{version}.zip under skillsRoot/cache/zips from a normalized package dir.
+ */
+async function cacheSkillZip(skillPath, skillMeta = {}, skillsRoot) {
+  const root = skillsRoot || getDefaultSkillsRoot()
+  const zipPath = buildZipCachePath(root, {
+    name: skillMeta.name || skillMeta.skillId,
+    version: skillMeta.version || skillMeta.latestVersion || '1.0.0',
+  })
+  const result = await zipDirectory(skillPath, zipPath, {
+    exclude: (rel) => /(^|\/)skill\.json$/i.test(rel),
+  })
+  return {
+    ok: true,
+    zipPath,
+    zipHash: result.sha256 || hashFile(zipPath),
+    bytes: result.bytes,
+  }
 }
 
 function verifySkillPackage(homeDir, payload = {}) {
@@ -190,20 +257,23 @@ function verifySkillPackage(homeDir, payload = {}) {
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
     return { ok: false, exists: false, error: '本地 Skill 包不存在' }
   }
-  const skillMd = path.join(resolved, 'SKILL.md')
-  if (!fs.existsSync(skillMd)) {
-    return { ok: false, exists: false, error: '缺少 SKILL.md' }
+  const skillMd = findSkillMdPath(resolved)
+  if (!skillMd) {
+    return { ok: false, exists: false, error: '缺少 skill.md / SKILL.md' }
   }
   let manifest = null
+  const pkgManifest = readManifestFile(resolved)
+  if (pkgManifest.ok) manifest = pkgManifest.manifest
   try {
-    manifest = JSON.parse(fs.readFileSync(path.join(resolved, 'skill.json'), 'utf8'))
+    const skillJson = JSON.parse(fs.readFileSync(path.join(resolved, 'skill.json'), 'utf8'))
+    manifest = { ...skillJson, ...manifest }
   } catch {
-    manifest = null
+    // optional
   }
   const text = fs.readFileSync(skillMd, 'utf8')
   const meta = {
     name: payload.name || manifest?.name,
-    description: payload.description,
+    description: payload.description || manifest?.description,
     version: payload.version || manifest?.version,
     sourceId: payload.sourceId || manifest?.sourceId,
     sourceName: payload.sourceName,
@@ -220,6 +290,7 @@ function verifySkillPackage(homeDir, payload = {}) {
     contentHash,
     expectedHash: expected || undefined,
     hashMatches,
+    manifest: pkgManifest.ok ? pkgManifest.manifest : undefined,
     error: ok ? undefined : isStub ? '本地包仅为简介占位' : '本地包 hash 不匹配或已损坏',
   }
 }
@@ -257,18 +328,21 @@ function resolveSkillsRoot(homeDir, configured) {
 
 function linkSkillToAgent({ homeDir, skill, agentSkillPath }) {
   if (!agentSkillPath) return { ok: false, error: '智能体 Skill 目录未知' }
-  const src = expandPath(skill.localPath, homeDir)
+  // Prefer Local Agent Manager install path when available
+  let src = ''
+  if (skill.agentInstallPath) src = expandPath(skill.agentInstallPath, homeDir)
+  if (!src || !fs.existsSync(src)) src = expandPath(skill.localPath, homeDir)
   if (!src) return { ok: false, error: 'Skill 本地路径无效' }
   if (!fs.existsSync(src)) {
     return { ok: false, error: '本地 Skill 包不存在，请重新安装后再同步' }
   }
-  const skillMd = path.join(src, 'SKILL.md')
-  if (!fs.existsSync(skillMd) || isStubSkillMarkdown(fs.readFileSync(skillMd, 'utf8'), skill)) {
+  const skillMd = findSkillMdPath(src)
+  if (!skillMd || isStubSkillMarkdown(fs.readFileSync(skillMd, 'utf8'), skill)) {
     return { ok: false, error: '本地 Skill 内容不完整（仅有简介），请重新安装后再同步' }
   }
   const agentDir = expandPath(agentSkillPath, homeDir)
   fs.mkdirSync(agentDir, { recursive: true })
-  const dest = path.join(agentDir, String(skill.skillId || 'skill').replace(/[<>:"|?*\\/]/g, '_'))
+  const dest = path.join(agentDir, String(skill.skillId || skill.name || 'skill').replace(/[<>:"|?*\\/]/g, '_'))
   if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true })
   copyDirSync(src, dest)
   return { ok: true, destPath: dest }
@@ -398,7 +472,7 @@ function readSkillMarkdown(homeDir, payload = {}, skillsRoot) {
     return { ok: false, error: 'Skill 目录不存在，请先安装' }
   }
 
-  const candidates = ['SKILL.md', 'skill.md', 'README.md', 'readme.md']
+  const candidates = ['README.md', 'readme.md', 'skill.md', 'SKILL.md']
   for (const name of candidates) {
     const file = path.join(dir, name)
     if (fs.existsSync(file) && fs.statSync(file).isFile()) {
@@ -414,13 +488,16 @@ function readSkillMarkdown(homeDir, payload = {}, skillsRoot) {
     }
   }
 
-  return { ok: false, error: '未找到可预览的 Markdown 文件（SKILL.md / README.md）' }
+  return { ok: false, error: '未找到可预览的 Markdown 文件（README.md / skill.md）' }
 }
 
 module.exports = {
   expandPath,
   toDisplayPath,
   ensureSkillPackage,
+  cacheSkillZip,
+  buildZipCachePath,
+  getZipCacheDir,
   buildLocalSkillPath,
   getDefaultSkillsRoot,
   resolveSkillsRoot,
@@ -436,4 +513,5 @@ module.exports = {
   isStubSkillMarkdown,
   isLocalOrigin,
   buildStubMarkdown,
+  findSkillMdPath,
 }

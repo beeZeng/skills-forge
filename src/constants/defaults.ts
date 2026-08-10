@@ -110,7 +110,7 @@ export const DEFAULT_AGENTS: AgentInstallation[] = [
   },
 ]
 
-export const CATEGORY_CHIPS = ['全部', '数据分析', '文档处理', '编程开发', '安全审计', '办公效率', 'AI助手'] as const
+export const CATEGORY_CHIPS = ['全部', '开发', '测试', '办公', '数据', '自动化'] as const
 
 /** Legacy seed Skill UIDs — stripped on hydrate so old persisted mock installs disappear. */
 export const LEGACY_MOCK_SKILL_UIDS = new Set([

@@ -236,9 +236,12 @@ export async function hubLogout(baseUrl: string): Promise<{ ok: boolean }> {
   return browserLogout(baseUrl)
 }
 
-export async function hubMe(baseUrl: string): Promise<AuthMeResult> {
+export async function hubMe(
+  baseUrl: string,
+  options?: { persistTtlMs?: number },
+): Promise<AuthMeResult> {
   const ipc = window.skillMesh?.auth?.me
-  if (ipc) return ipc({ baseUrl })
+  if (ipc) return ipc({ baseUrl, persistTtlMs: options?.persistTtlMs })
   return browserMe(baseUrl)
 }
 

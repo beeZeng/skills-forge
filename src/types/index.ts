@@ -21,13 +21,11 @@ export type SkillVisibility = 'PUBLIC' | 'NAMESPACE_ONLY' | 'PRIVATE'
 export type SkillOrigin = 'catalog' | 'created' | 'imported'
 export type AppTheme =
   | 'system'
-  | 'dark'
-  | 'light'
-  | 'sapphiredusk'
-  | 'tron'
-  | 'gildedgrove'
-  | 'gloom'
-  | 'desertbloom'
+  | 'deepspace'
+  | 'futurewhite'
+  | 'obsidian'
+  | 'aurora'
+  | 'verdant'
 
 /** App-level SkillHub account (shared with Pangu Hub). */
 export interface AppAccount {
@@ -36,6 +34,8 @@ export interface AppAccount {
   displayName?: string
   email?: string
   hubBaseUrl: string
+  /** ISO timestamp — login remains valid until this time (48h window). */
+  sessionExpiresAt?: string
 }
 
 export interface SourceNamespace {
@@ -88,6 +88,31 @@ export interface AgentInstallation {
   lastDetectedAt?: string
 }
 
+export interface SkillPackageFileNode {
+  name: string
+  path: string
+  type: 'file' | 'dir'
+  children?: SkillPackageFileNode[]
+}
+
+export interface SkillManifest {
+  manifest_version?: string
+  skill_id: string
+  name: string
+  version: string
+  source: string
+  description: string
+  author?: string
+  entry?: string
+  hash?: string
+  homepage?: string
+  license?: string
+  tags?: string[]
+  skillId?: string
+  sourceId?: string
+  created_time?: string
+}
+
 export interface Skill {
   uid: string
   sourceId: string
@@ -106,6 +131,13 @@ export interface Skill {
   updatedAt?: string
   lastSyncedAt?: string
   localPath?: string
+  /** Local Agent Manager install path (~/.agent/skills/{skill_id}). */
+  agentInstallPath?: string
+  /** Cached zip path under skillsRoot/cache/zips. */
+  zipPath?: string
+  zipHash?: string
+  /** Parsed package manifest.json when available. */
+  manifest?: SkillManifest
   /** SHA-256 of installed package tree; used to detect local deletion / corruption. */
   contentHash?: string
   /** Where package body was downloaded from (github:/clawhub:/skillhub:…). */
@@ -133,10 +165,26 @@ export interface Skill {
   updateAvailable: boolean
   favorite: boolean
   downloads?: number
+  /** Analytics: detail views (24h deduped per user). */
+  viewCount?: number
+  /** Analytics: aggregate favorite count. */
+  favoriteCount?: number
+  /** Analytics: package download count. */
+  downloadCount?: number
+  /** Analytics: successful local installs. */
+  installCount?: number
+  /** Analytics: agent invocations (phase-1 field only). */
+  usageCount?: number
+  /** Hot ranking score. */
+  skillScore?: number
+  /** Recommendation / status badges. */
+  badges?: SkillBadge[]
   syncedAgents: string[]
   origin?: SkillOrigin
   content?: string
 }
+
+export type SkillBadge = 'new' | 'editor' | 'fast_growth' | 'hot'
 
 export interface TaskItem {
   id: string
@@ -211,7 +259,10 @@ export interface PersistedUiState {
   agentPathOverrides?: Record<string, string>
   theme?: AppTheme
   panguHubUrl?: string
-  accountHint?: Pick<AppAccount, 'loggedIn' | 'hubBaseUrl' | 'userId' | 'displayName' | 'email'>
+  accountHint?: Pick<
+    AppAccount,
+    'loggedIn' | 'hubBaseUrl' | 'userId' | 'displayName' | 'email' | 'sessionExpiresAt'
+  >
   /** Agents that receive newly installed Skills automatically. */
   defaultSyncAgentIds?: string[]
   /** Local Nexus skills repository root (display path). */

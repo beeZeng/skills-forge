@@ -5,6 +5,7 @@ const os = require('os')
 const {
   buildLocalSkillPath,
   ensureSkillPackage,
+  cacheSkillZip,
   linkSkillToAgent,
   unlinkSkillFromAgent,
   removeSkillPackage,
@@ -18,14 +19,20 @@ const {
   verifySkillPackage,
   isStubSkillMarkdown,
   isLocalOrigin,
+  findSkillMdPath,
 } = require('../skills/sync.cjs')
 const registry = require('../registry/index.cjs')
 const skillhubAuth = require('../registry/skillhub-auth.cjs')
 const skillhubPublish = require('../registry/skillhub-publish.cjs')
 const { packSkillZip, cleanupPack } = require('../skills/pack.cjs')
+const publishPipeline = require('../skills/publish-pipeline.cjs')
 const { fetchSkillPackageContent } = require('../skills/fetch-content.cjs')
 const { getDiskSpace } = require('../fs/disk-space.cjs')
 const appLog = require('../logging/app-log.cjs')
+const agentManager = require('../skills/agent-manager.cjs')
+const { createSkillAnalytics } = require('../skills/skill-analytics.cjs')
+const { createSkillIndex } = require('../skills/skill-index.cjs')
+const { createAppUpdater } = require('../update/app-updater.cjs')
 
 /** Register (or replace) an ipcMain handle — safe across reloads / double-init. */
 function safeHandle(channel, handler) {
@@ -364,12 +371,37 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
   const skillsRootFile = path.join(dataRoot, 'skills-root.json')
   const root = homeDir || os.homedir()
   let skillsRoot = resolveSkillsRoot(root, initialSkillsRoot)
+  const analytics = createSkillAnalytics({ dataRoot })
+  const skillIndex = createSkillIndex({ dataRoot })
+  const appUpdater = createAppUpdater({ dataRoot })
+  const pendingApply = appUpdater.finalizePendingOnLaunch()
+  if (pendingApply?.message) {
+    console.warn('[Nexus] update apply status:', pendingApply.message)
+  }
 
   const refreshSkillsRootFromDisk = () => {
     const saved = readJson(skillsRootFile, null)
     skillsRoot = resolveSkillsRoot(root, saved?.path)
     return skillsRoot
   }
+
+  // Skill analytics (local store; API-shaped for future remote sync)
+  safeHandle('analytics:getStats', async (_event, payload) => analytics.getStats(payload || {}))
+  safeHandle('analytics:getBulkStats', async (_event, payload) => analytics.getBulkStats(payload || {}))
+  safeHandle('analytics:recordView', async (_event, payload) => analytics.recordView(payload || {}))
+  safeHandle('analytics:favorite', async (_event, payload) => analytics.favorite(payload || {}))
+  safeHandle('analytics:unfavorite', async (_event, payload) => analytics.unfavorite(payload || {}))
+  safeHandle('analytics:recordDownload', async (_event, payload) => analytics.recordDownload(payload || {}))
+  safeHandle('analytics:recordInstall', async (_event, payload) => analytics.recordInstall(payload || {}))
+  safeHandle('analytics:recordUsage', async (_event, payload) => analytics.recordUsage(payload || {}))
+  safeHandle('analytics:listPending', async () => analytics.listPending())
+  safeHandle('analytics:clearPending', async (_event, payload) => analytics.clearPending(payload || {}))
+
+  // Skill Index — durable catalog for Dashboard search
+  safeHandle('skillIndex:getMeta', async () => skillIndex.getMeta())
+  safeHandle('skillIndex:readAll', async () => skillIndex.readAll())
+  safeHandle('skillIndex:replaceAll', async (_event, payload) => skillIndex.replaceAll(payload || {}))
+  safeHandle('skillIndex:search', async (_event, payload) => skillIndex.search(payload || {}))
 
   safeHandle('storage:loadState', async () => readJson(stateFile, null))
   safeHandle('storage:saveState', async (_event, state) => {
@@ -405,15 +437,134 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
       : buildLocalSkillPath(root, skill, skillsRoot)
     if (!preferred) return { ok: false, error: '无法解析本地安装路径' }
 
+    // Import a single markdown file as a skill package.
+    const looksLikeMd =
+      /\.md$/i.test(preferred) &&
+      fs.existsSync(preferred) &&
+      fs.statSync(preferred).isFile()
+    if (looksLikeMd) {
+      let mdContent = ''
+      try {
+        mdContent = fs.readFileSync(preferred, 'utf8')
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : '读取 Markdown 失败',
+        }
+      }
+      const baseName =
+        path.basename(preferred, path.extname(preferred)).replace(/[<>:"|?*\u0000-\u001f]+/g, '_') ||
+        skill.skillId ||
+        'skill'
+      const destDir = path.join(path.dirname(preferred), `${baseName}-skill`)
+      const written = ensureSkillPackage(destDir, {
+        ...skill,
+        name: skill.name || baseName,
+        content: mdContent,
+        origin: skill.origin || 'imported',
+        sourceId: skill.sourceId || 'local',
+      })
+      if (!written.ok) {
+        return {
+          ok: false,
+          error: written.error || '从 Markdown 创建 Skill 包失败',
+          localPath: toDisplayPath(destDir, root),
+        }
+      }
+      let zipPath
+      let zipHash
+      try {
+        const zipped = await cacheSkillZip(
+          destDir,
+          {
+            ...skill,
+            ...written.manifest,
+            name: written.manifest?.name || skill.name || baseName,
+            version: written.manifest?.version || skill.version || '0.1.0',
+            skill_id: written.manifest?.skill_id,
+          },
+          skillsRoot,
+        )
+        zipPath = zipped.zipPath
+        zipHash = zipped.zipHash
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : '缓存 zip 失败',
+          localPath: toDisplayPath(destDir, root),
+          manifest: written.manifest,
+        }
+      }
+      return {
+        ok: true,
+        localPath: toDisplayPath(destDir, root),
+        contentSource: 'markdown',
+        contentHash: written.contentHash,
+        zipPath: zipPath ? toDisplayPath(zipPath, root) : undefined,
+        zipHash,
+        manifest: written.manifest,
+      }
+    }
+
+    // Import / install from a local zip: unzip + normalize via installFromZip.
+    const looksLikeZip =
+      /\.(zip|skillpack)$/i.test(preferred) &&
+      fs.existsSync(preferred) &&
+      fs.statSync(preferred).isFile()
+    if (looksLikeZip) {
+      const installed = await agentManager.installFromZip({
+        zipPath: preferred,
+        homeDir: root,
+        sourceId: skill.sourceId || 'local',
+        skillUid: skill.uid,
+        force: skill.forceFetch === true,
+        conflictResolution: skill.conflictResolution || 'overwrite',
+        skillMeta: {
+          name: skill.name,
+          skillId: skill.skillId,
+          sourceId: skill.sourceId || 'local',
+          version: skill.version || skill.latestVersion || '1.0.0',
+          description: skill.description,
+          author: skill.author,
+          origin: skill.origin || 'imported',
+          tags: skill.tags,
+        },
+      })
+      if (!installed.ok) {
+        return {
+          ok: false,
+          cancelled: installed.cancelled,
+          error: installed.error || '从 zip 安装失败',
+          conflict: installed.conflict,
+          existing: installed.existing,
+          incoming: installed.incoming,
+          zipPath: preferred,
+          zipHash: installed.zipHash,
+        }
+      }
+      return {
+        ok: true,
+        localPath: toDisplayPath(installed.installPath, root),
+        agentInstallPath: toDisplayPath(installed.installPath, root),
+        contentHash: installed.manifest?.hash || installed.installed?.hash,
+        contentSource: 'zip',
+        zipPath: preferred,
+        zipHash: installed.zipHash,
+        manifest: installed.manifest,
+        updated: installed.updated,
+        upgraded: installed.upgraded,
+      }
+    }
+
     const local = isLocalOrigin(skill)
     let content = typeof skill.content === 'string' ? skill.content : undefined
     let files
     let contentSource
 
-    const existingMd = path.join(preferred, 'SKILL.md')
+    const existingMd = findSkillMdPath(preferred)
     let existingText = ''
     try {
-      if (fs.existsSync(existingMd)) existingText = fs.readFileSync(existingMd, 'utf8')
+      if (existingMd) existingText = fs.readFileSync(existingMd, 'utf8')
     } catch {
       existingText = ''
     }
@@ -426,37 +577,112 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
       (!local && !hasGoodInline && !hasGoodExisting) ||
       (local && !hasGoodInline && !hasGoodExisting)
 
-    if (!needsFetch && hasGoodExisting && !hasGoodInline) {
-      const verified = verifySkillPackage(root, {
-        localPath: toDisplayPath(preferred, root),
-        contentHash: skill.contentHash,
-        name: skill.name,
-        description: skill.description,
-        version: skill.version,
-        sourceId: skill.sourceId,
-        sourceName: skill.sourceName,
-      })
-      // Re-hash / refresh manifest without re-download
+    const finishPackage = async (pkgContent, pkgFiles, pkgSource, contentFetched) => {
       const written = ensureSkillPackage(preferred, {
         ...skill,
-        content: existingText,
-        contentSource: skill.contentSource || 'existing',
-        origin: local ? skill.origin || 'created' : skill.origin,
+        content: pkgContent,
+        files: pkgFiles,
+        contentSource: pkgSource,
       })
       if (!written.ok) {
-        return { ok: false, error: written.error || '本地包校验失败', localPath: toDisplayPath(preferred, root) }
+        return {
+          ok: false,
+          error: written.error || '写入 Skill 包失败',
+          localPath: toDisplayPath(preferred, root),
+        }
       }
+      if (!local && written.isStub) {
+        return {
+          ok: false,
+          error: '安装结果仍是简介占位，未写入完整内容',
+          localPath: toDisplayPath(preferred, root),
+        }
+      }
+
+      let zipPath
+      let zipHash
+      try {
+        const zipped = await cacheSkillZip(
+          preferred,
+          {
+            ...skill,
+            ...written.manifest,
+            name: written.manifest?.name || skill.name || skill.skillId,
+            version: written.manifest?.version || skill.version || skill.latestVersion || '1.0.0',
+            skillId: skill.skillId,
+            sourceId: skill.sourceId,
+            skill_id: written.manifest?.skill_id,
+          },
+          skillsRoot,
+        )
+        zipPath = zipped.zipPath
+        zipHash = zipped.zipHash
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : '缓存 zip 失败',
+          localPath: toDisplayPath(preferred, root),
+        }
+      }
+
+      let agentInstall = null
+      if (skill.skipAgentInstall !== true && zipPath) {
+        agentInstall = await agentManager.installFromZip({
+          zipPath,
+          expectedHash: zipHash,
+          homeDir: root,
+          sourceId: skill.sourceId,
+          skillUid: skill.uid,
+          force: skill.forceFetch === true,
+          conflictResolution: skill.conflictResolution,
+          skillMeta: {
+            name: skill.name,
+            skillId: skill.skillId,
+            sourceId: skill.sourceId,
+            version: skill.version || skill.latestVersion,
+            description: skill.description,
+            author: skill.author,
+            skill_id: written.manifest?.skill_id,
+          },
+        })
+        if (!agentInstall.ok) {
+          return {
+            ok: false,
+            error: agentInstall.error || '安装到本地 Agent 目录失败',
+            conflict: agentInstall.conflict,
+            existing: agentInstall.existing,
+            incoming: agentInstall.incoming,
+            cancelled: agentInstall.cancelled,
+            localPath: toDisplayPath(preferred, root),
+            zipPath: toDisplayPath(zipPath, root),
+            zipHash,
+            manifest: written.manifest,
+          }
+        }
+      }
+
       return {
         ok: true,
         localPath: toDisplayPath(preferred, root),
-        contentFetched: false,
-        contentSource: skill.contentSource || 'existing',
-        contentHash: written.contentHash || verified.contentHash,
+        contentFetched: Boolean(contentFetched),
+        contentSource: pkgSource,
+        contentHash: written.contentHash,
+        zipPath: zipPath ? toDisplayPath(zipPath, root) : undefined,
+        zipHash,
+        manifest: written.manifest || agentInstall?.manifest,
+        agentInstallPath: agentInstall?.installPath
+          ? toDisplayPath(agentInstall.installPath, root)
+          : undefined,
+        installedRecord: agentInstall?.installed,
+        skill_id: (written.manifest || agentInstall?.manifest)?.skill_id,
       }
     }
 
+    if (!needsFetch && hasGoodExisting && !hasGoodInline) {
+      return finishPackage(existingText, undefined, skill.contentSource || 'existing', false)
+    }
+
     if (needsFetch) {
-      // Do not reuse stale inline stub/description as package body
       if (!local) content = undefined
       const fetched = await fetchSkillPackageContent({ ...skill, content: undefined })
       if (fetched.ok && fetched.content && !isStubSkillMarkdown(fetched.content, skill)) {
@@ -472,33 +698,122 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
       }
     }
 
-    const written = ensureSkillPackage(preferred, {
-      ...skill,
-      content,
-      files,
-      contentSource,
+    return finishPackage(content, files, contentSource, Boolean(content && content.trim()))
+  })
+
+  safeHandle('skills:installToAgent', async (_event, payload) => {
+    const zipPath = payload?.zipPath ? expandPath(payload.zipPath, root) : ''
+    if (!zipPath) return { ok: false, error: '缺少 zip 路径' }
+    const result = await agentManager.installFromZip({
+      zipPath,
+      expectedHash: payload?.expectedHash || payload?.zipHash,
+      homeDir: root,
+      sourceId: payload?.sourceId,
+      skillUid: payload?.skillUid,
+      force: payload?.force === true,
+      conflictResolution: payload?.conflictResolution,
+      skillMeta: payload?.skillMeta || {},
     })
-    if (!written.ok) {
-      return {
-        ok: false,
-        error: written.error || '写入 Skill 包失败',
-        localPath: toDisplayPath(preferred, root),
-      }
+    if (!result.ok) return result
+    return {
+      ...result,
+      installPath: result.installPath ? toDisplayPath(result.installPath, root) : undefined,
     }
-    if (!local && written.isStub) {
-      return {
-        ok: false,
-        error: '安装结果仍是简介占位，未写入完整内容',
-        localPath: toDisplayPath(preferred, root),
-      }
-    }
+  })
+
+  safeHandle('skills:uninstallFromAgent', async (_event, payload) => {
+    const id = payload?.skill_id || payload?.skillId || payload?.name || payload?.skillName
+    if (!id) return { ok: false, error: '缺少 skill_id' }
+    return agentManager.uninstall(id, root)
+  })
+
+  safeHandle('skills:scanLocal', async (_event, payload) => {
+    return agentManager.scanLocalSkills(root, { forceFull: payload?.forceFull === true })
+  })
+
+  safeHandle('skills:getRegistry', async () => {
+    const registry = agentManager.readRegistry(root)
     return {
       ok: true,
-      localPath: toDisplayPath(preferred, root),
-      contentFetched: Boolean(content && content.trim()),
-      contentSource,
-      contentHash: written.contentHash,
+      registry,
+      skills: Object.values(registry.skills || {}),
+      root: toDisplayPath(agentManager.getAgentSkillsRoot(root), root),
+      registryPath: toDisplayPath(agentManager.getRegistryPath(root), root),
     }
+  })
+
+  safeHandle('skills:readPackageMeta', async (_event, payload) => {
+    const skillId = payload?.skill_id || payload?.skillId || payload?.name
+    if (payload?.agentInstallPath || payload?.localPath || skillId) {
+      return agentManager.readPackageMeta(
+        payload?.agentInstallPath || payload?.localPath || skillId,
+        root,
+      )
+    }
+    return { ok: false, error: 'Skill 包目录不存在，请先安装' }
+  })
+
+  safeHandle('skills:listPackageTree', async (_event, payload) => {
+    const skillId = payload?.skill_id || payload?.skillId || payload?.name
+    return agentManager.listPackageTree(
+      payload?.agentInstallPath || payload?.localPath || skillId,
+      root,
+    )
+  })
+
+  safeHandle('skills:listAgentInstalled', async () => {
+    const scan = agentManager.scanLocalSkills(root, { forceFull: false })
+    return {
+      ok: true,
+      skills: scan.skills,
+      root: scan.root,
+      registryPath: scan.registryPath,
+      stats: scan.stats,
+    }
+  })
+
+  safeHandle('skills:resolveConflict', async (_event, payload) => {
+    // Convenience: re-run install with conflictResolution
+    const zipPath = payload?.zipPath ? expandPath(payload.zipPath, root) : ''
+    if (!zipPath) return { ok: false, error: '缺少 zip 路径' }
+    return agentManager.installFromZip({
+      zipPath,
+      expectedHash: payload?.expectedHash || payload?.zipHash,
+      homeDir: root,
+      sourceId: payload?.sourceId,
+      skillUid: payload?.skillUid,
+      conflictResolution: payload?.conflictResolution || 'overwrite',
+      skillMeta: payload?.skillMeta || {},
+    })
+  })
+
+  safeHandle('dialog:skillConflict', async (_event, payload) => {
+    const skillId = payload?.skill_id || payload?.incoming?.skill_id || 'Skill'
+    const version = payload?.version || payload?.incoming?.version || ''
+    const conflict = payload?.conflict || 'hash_mismatch'
+    const isVersion = conflict === 'version_update'
+    const existingVer = payload?.existing?.version || ''
+    const incomingVer = payload?.incoming?.version || version
+    const result = await dialog.showMessageBox({
+      type: 'warning',
+      buttons: isVersion ? ['取消', '保留旧版本', '更新'] : ['取消', '保留旧版本', '覆盖安装'],
+      defaultId: 0,
+      cancelId: 0,
+      title: payload?.title || (isVersion ? '发现 Skill 新版本' : 'Skill 内容冲突'),
+      message:
+        payload?.message ||
+        (isVersion
+          ? `${skillId}：${existingVer} → ${incomingVer}`
+          : `${skillId}@${version} 本地内容与待安装包 hash 不同`),
+      detail:
+        payload?.detail ||
+        (isVersion
+          ? '选择「更新」将备份旧版本后安装新版本；「保留旧版本」取消本次安装。'
+          : '选择「覆盖安装」将备份旧版本后写入新内容；「保留旧版本」取消本次安装。'),
+    })
+    if (result.response === 2) return { resolution: isVersion ? 'update' : 'overwrite' }
+    if (result.response === 1) return { resolution: 'keep' }
+    return { resolution: 'cancel' }
   })
 
   safeHandle('skills:verifyPackage', async (_event, payload) => {
@@ -515,8 +830,20 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
     return { ok: true, results }
   })
 
-  safeHandle('skills:removePackage', async (_event, localPath) => {
+  safeHandle('skills:removePackage', async (_event, payload) => {
+    const localPath = typeof payload === 'string' ? payload : payload?.localPath
+    const skillId =
+      typeof payload === 'object'
+        ? payload?.skill_id || payload?.skillId || payload?.name || payload?.skillName
+        : undefined
     removeSkillPackage(homeDir || os.homedir(), localPath)
+    if (skillId) {
+      try {
+        agentManager.uninstall(skillId, root)
+      } catch {
+        // ignore
+      }
+    }
     return { ok: true }
   })
 
@@ -596,10 +923,13 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
   })
 
   safeHandle('app:getPaths', async () => {
+    const { app } = require('electron')
     refreshSkillsRootFromDisk()
     fs.mkdirSync(dataRoot, { recursive: true })
     fs.mkdirSync(skillsRoot, { recursive: true })
     const defaultRoot = getDefaultSkillsRoot(root)
+    const programPath = app.getPath('exe')
+    const userDataPath = app.getPath('userData')
     return {
       ok: true,
       dataRoot,
@@ -610,8 +940,22 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
       skillsRootDefaultDisplay: toDisplayPath(defaultRoot, root),
       stateFile: path.join(dataRoot, 'ui-state.json'),
       stateFileDisplay: toDisplayPath(path.join(dataRoot, 'ui-state.json'), root),
+      programPath,
+      programPathDisplay: toDisplayPath(programPath, root),
+      userDataPath,
+      userDataPathDisplay: toDisplayPath(userDataPath, root),
     }
   })
+
+  safeHandle('app:getVersionInfo', async () => appUpdater.getVersionInfo())
+  safeHandle('app:checkUpdate', async (_event, payload) => appUpdater.checkForUpdates(payload || {}))
+  safeHandle('app:downloadUpdate', async (_event, payload) => appUpdater.downloadUpdate(payload || {}))
+  safeHandle('app:installUpdate', async () => appUpdater.installUpdate())
+  safeHandle('app:rollbackUpdate', async () => appUpdater.rollback())
+  safeHandle('app:setUpdateFeedUrl', async (_event, payload) =>
+    appUpdater.setFeedUrl(payload?.url || ''),
+  )
+  safeHandle('app:getPendingApplyStatus', async () => pendingApply)
 
   safeHandle('app:setSkillsRoot', async (_event, payload) => {
     const validated = validateAgentSkillPath(payload?.path, root)
@@ -646,9 +990,22 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
     return packSkillZip({ homeDir: homeDir || os.homedir(), ...(payload || {}) })
   })
 
+  safeHandle('skills:preparePublish', async (_event, payload) => {
+    return publishPipeline.preparePublishFromZip(payload || {})
+  })
+
+  safeHandle('skills:finalizePublish', async (_event, payload) => {
+    return publishPipeline.finalizePublishSession(payload || {})
+  })
+
+  safeHandle('skills:cleanupPublish', async (_event, payload) => {
+    return publishPipeline.cleanupPublishSession(payload?.sessionDir || payload?.sessionId)
+  })
+
   safeHandle('hub:publish', async (_event, payload) => {
     const result = await skillhubPublish.publishSkill(payload || {})
     if (payload?.tmpDir) cleanupPack(payload.tmpDir)
+    if (payload?.sessionDir) publishPipeline.cleanupPublishSession(payload.sessionDir)
     return result
   })
 
@@ -738,7 +1095,7 @@ function registerIpc({ dataRoot, homeDir, skillsRoot: initialSkillsRoot }) {
     }
   })
 
-  console.log('[Nexus] IPC ready: app:getDiskSpace, logs:getInfo/append/purge/openDir')
+  console.log('[Nexus] IPC ready: app update, disk space, logs')
 }
 
 module.exports = { registerIpc, safeHandle }

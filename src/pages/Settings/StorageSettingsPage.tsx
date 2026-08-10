@@ -1,5 +1,6 @@
 import { FolderOpen, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { PathReveal } from '@/components/common/PathReveal'
 import { useAppStore } from '@/stores/app-store'
 import { cn } from '@/lib/utils'
 
@@ -83,16 +84,16 @@ export function StorageSettingsPage() {
       <div className="rounded-mesh border border-mesh-border bg-mesh-card p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm font-medium">本地仓库路径</div>
+            <div className="text-sm font-medium">本地技能目录</div>
             <p className="mt-1 text-xs text-mesh-dim">
               安装 / 新建 / 导入的 Skill 存放于此。修改后需重启生效；已安装内容不会自动迁移。
             </p>
-            <div className="mt-2 break-all font-mono text-xs text-mesh-muted">
-              {skillsRootPath || DEFAULT_SKILLS_ROOT}
+            <div className="mt-2 space-y-1.5">
+              <PathReveal label="本地技能目录" path={skillsRootPath || DEFAULT_SKILLS_ROOT} />
+              {absolutePath && absolutePath !== skillsRootPath ? (
+                <PathReveal label="绝对路径" path={absolutePath} compact />
+              ) : null}
             </div>
-            {absolutePath ? (
-              <div className="mt-1 break-all font-mono text-[11px] text-mesh-dim">{absolutePath}</div>
-            ) : null}
           </div>
           <div className="flex shrink-0 gap-1.5">
             <button

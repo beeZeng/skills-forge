@@ -88,7 +88,7 @@ function authHeaders(token?: string): HeadersInit {
 function formatDay(ms?: number) {
   if (!ms || typeof ms !== 'number') return undefined
   try {
-    return new Date(ms).toISOString().slice(0, 10)
+    return new Date(ms).toISOString()
   } catch {
     return undefined
   }
@@ -149,9 +149,13 @@ function formatMarketDay(value?: number | string) {
   try {
     if (typeof value === 'number') {
       const ms = value < 1e12 ? value * 1000 : value
-      return new Date(ms).toISOString().slice(0, 10)
+      return new Date(ms).toISOString()
     }
-    return new Date(value).toISOString().slice(0, 10)
+    const ms = new Date(value).getTime()
+    if (Number.isNaN(ms)) return String(value)
+    // Keep date-only inputs as date-only; preserve full timestamps as ISO.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(value).trim())) return String(value).trim()
+    return new Date(ms).toISOString()
   } catch {
     return undefined
   }
@@ -233,7 +237,8 @@ function mapSkillsMpItem(item: Record<string, any>, meta: { sourceId: string; so
     installed: false,
     updateAvailable: false,
     favorite: false,
-    downloads: item.stars,
+    // skillsmp `stars` is repo popularity, not per-skill installs
+    downloads: Number(item.downloadCount ?? item.installCount ?? 0) || 0,
     syncedAgents: [],
     origin: 'catalog',
   }
@@ -285,7 +290,8 @@ function mapPaleBlueDotItem(item: Record<string, any>, meta: { sourceId: string;
     installed: false,
     updateAvailable: false,
     favorite: false,
-    downloads: item.downloadCount ?? item.githubStars,
+    // Prefer real download/install metrics; githubStars is repo-level and shared across skills
+    downloads: Number(item.downloadCount ?? item.installCount ?? 0) || 0,
     syncedAgents: [],
     origin: 'catalog',
   }

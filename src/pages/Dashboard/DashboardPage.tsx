@@ -1,11 +1,9 @@
-import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { AgentMatrix } from '@/components/dashboard/AgentMatrix'
 import { DashPanel } from '@/components/dashboard/DashPanel'
 import { KpiTile } from '@/components/dashboard/KpiTile'
 import { SourceMatrix } from '@/components/dashboard/SourceMatrix'
-import { dailyTaskSeries } from '@/components/dashboard/Sparkline'
 import { selectLatestDiscoverSkills, useAppStore } from '@/stores/app-store'
 import type { TaskKind, TaskStatus } from '@/types'
 import { cn } from '@/lib/utils'
@@ -44,13 +42,6 @@ export function DashboardPage() {
   const hubSources = sources.filter((s) => s.id !== 'local')
   const connectedSources = hubSources.filter((s) => s.enabled && s.status === 'connected').length
 
-  const installSeries = useMemo(
-    () => dailyTaskSeries(tasks, { kinds: ['install', 'import', 'create'], successOnly: true }),
-    [tasks],
-  )
-  const syncSeries = useMemo(() => dailyTaskSeries(tasks, { kinds: ['sync', 'unsync'] }), [tasks])
-  const updateSeries = useMemo(() => dailyTaskSeries(tasks, { kinds: ['update'] }), [tasks])
-  const taskSeries = useMemo(() => dailyTaskSeries(tasks), [tasks])
   const unsyncedInstalled = skills.filter(
     (s) => (s.installed || s.origin === 'created' || s.origin === 'imported') && s.syncedAgents.length === 0,
   )
@@ -88,29 +79,13 @@ export function DashboardPage() {
         </div>
       ) : null}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <KpiTile
-          label="我的 Skill"
-          value={mineCount}
-          to="/skills/mine"
-          tone="accent"
-          series={installSeries}
-          trendHint="近7日安装"
-        />
-        <KpiTile
-          label="已连接智能体"
-          value={connectedAgents}
-          to="/settings/agents"
-          tone="success"
-          series={syncSeries}
-          trendHint="近7日同步"
-        />
+        <KpiTile label="我的 Skill" value={mineCount} to="/skills/mine" tone="accent" />
+        <KpiTile label="已连接智能体" value={connectedAgents} to="/settings/agents" tone="success" />
         <KpiTile
           label="可更新"
           value={updatable}
           to="/skills/discover"
           tone={updatable > 0 ? 'warning' : 'accent'}
-          series={updateSeries}
-          trendHint="近7日更新"
           onNavigate={goDiscoverUpdates}
         />
         <KpiTile
@@ -118,8 +93,6 @@ export function DashboardPage() {
           value={todayTasks}
           to="/tasks"
           tone={failedTasks.length ? 'danger' : 'accent'}
-          series={taskSeries}
-          trendHint="近7日任务"
         />
       </div>
 

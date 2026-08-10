@@ -3,7 +3,7 @@ import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { loadPersistedState } from '@/services/persistence'
 import { useAppStore } from '@/stores/app-store'
-import { DashboardPage } from '@/pages/Dashboard/DashboardPage'
+import { HubHomePage } from '@/pages/Hub/HubHomePage'
 import { DiscoverPage } from '@/pages/Skills/DiscoverPage'
 import { MinePage } from '@/pages/Skills/MinePage'
 import { PublishPage } from '@/pages/Publish/PublishPage'
@@ -58,16 +58,16 @@ function Bootstrap() {
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-mesh-bg text-mesh-text">
         <BrandMark className="h-14 w-14" />
         <div className="text-base font-bold tracking-tight">Nexus</div>
-        <div className="text-sm text-mesh-dim">正在启动...</div>
+        <div className="text-sm text-mesh-muted">正在启动...</div>
       </div>
     )
   }
 
   return (
     <Routes>
+      <Route index element={<Navigate to="/dashboard" replace />} />
       <Route element={<AppShell />}>
-        <Route index element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/dashboard" element={<HubHomePage />} />
         <Route path="/skills/mine" element={<MinePage />} />
         <Route path="/skills/create" element={<Navigate to="/skills/mine" replace />} />
         <Route path="/skills/discover" element={<DiscoverPage />} />

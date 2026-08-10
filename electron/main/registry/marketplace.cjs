@@ -62,9 +62,13 @@ function formatDay(value) {
   try {
     if (typeof value === 'number') {
       const ms = value < 1e12 ? value * 1000 : value
-      return new Date(ms).toISOString().slice(0, 10)
+      return new Date(ms).toISOString()
     }
-    return new Date(value).toISOString().slice(0, 10)
+    const raw = String(value).trim()
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
+    const ms = new Date(raw).getTime()
+    if (Number.isNaN(ms)) return raw
+    return new Date(ms).toISOString()
   } catch {
     return undefined
   }
@@ -147,7 +151,8 @@ function mapSkillsMpItem(item, { sourceId, sourceName }) {
     installed: false,
     updateAvailable: false,
     favorite: false,
-    downloads: item.stars,
+    // skillsmp `stars` is repo popularity, not per-skill installs
+    downloads: Number(item.downloadCount ?? item.installCount ?? 0) || 0,
     syncedAgents: [],
     origin: 'catalog',
   }
@@ -198,7 +203,8 @@ function mapPaleBlueDotItem(item, { sourceId, sourceName }) {
     installed: false,
     updateAvailable: false,
     favorite: false,
-    downloads: item.downloadCount ?? item.githubStars,
+    // Prefer real download/install metrics; githubStars is repo-level and shared across skills
+    downloads: Number(item.downloadCount ?? item.installCount ?? 0) || 0,
     syncedAgents: [],
     origin: 'catalog',
   }

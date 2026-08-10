@@ -24,7 +24,11 @@ export function TopBar() {
   const account = useAppStore((s) => s.account)
   const setLoginOpen = useAppStore((s) => s.setLoginOpen)
   const logout = useAppStore((s) => s.logout)
+  const agents = useAppStore((s) => s.agents)
   const running = runningCount > 0
+  const isMac =
+    typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
+  const searchHotkey = isMac ? '⌘K' : 'Ctrl+K'
   const inputRef = useRef<HTMLInputElement>(null)
   const notifyRef = useRef<HTMLDivElement>(null)
   const userMenuRef = useRef<HTMLDivElement>(null)
@@ -67,7 +71,8 @@ export function TopBar() {
   }
 
   const searchValue = isMine ? installedSearchQuery : discoverSearchQuery
-  const searchPlaceholder = isMine ? '搜索名称、描述或标签...' : '搜索名称、描述或标签...'
+  const searchPlaceholder = '搜索技能、工具'
+  const connectedList = agents.filter((a) => a.installed).slice(0, 3)
 
   const handleSearchChange = (value: string) => {
     if (isMine) {
@@ -79,8 +84,8 @@ export function TopBar() {
 
   const logLabel =
     failedCount > 0
-      ? `日志 · 进行中 ${runningCount} · 失败 ${failedCount}`
-      : `日志 ${runningCount || 0}`
+      ? `任务 · 进行中 ${runningCount} · 失败 ${failedCount}`
+      : `任务 ${runningCount || 0}`
 
   useEffect(() => {
     if (!notifyOpen && !menuOpen) return
@@ -106,9 +111,9 @@ export function TopBar() {
   }, [notifyOpen, menuOpen])
 
   return (
-    <header className="app-drag relative z-40 flex h-14 shrink-0 items-center gap-3 border-b border-mesh-border bg-mesh-panel px-4">
+    <header className="app-drag relative z-40 flex h-14 shrink-0 items-center gap-3 border-b border-mesh-border bg-mesh-panel/90 px-4 backdrop-blur-xl">
       {showSearch ? (
-        <div className="app-no-drag mx-auto flex w-full max-w-3xl items-center gap-2 rounded-mesh border border-mesh-border bg-mesh-card px-3 py-2 focus-within:border-mesh-accent">
+        <div className="app-no-drag mx-auto flex w-full max-w-3xl items-center gap-2 rounded-xl border border-mesh-border bg-mesh-bg px-3 py-2 focus-within:border-mesh-accent focus-within:ring-2 focus-within:ring-mesh-accent/15">
           <Search className="h-4 w-4 text-mesh-dim" />
           <input
             ref={inputRef}
@@ -117,15 +122,36 @@ export function TopBar() {
             placeholder={searchPlaceholder}
             className="w-full bg-transparent text-sm outline-none placeholder:text-mesh-dim"
           />
-          <kbd className="hidden rounded border border-mesh-border px-1.5 py-0.5 text-[10px] text-mesh-dim sm:inline">
-            ⌘K
+          <kbd className="hidden rounded-md border border-mesh-border px-1.5 py-0.5 text-[10px] text-mesh-dim sm:inline">
+            {searchHotkey}
           </kbd>
         </div>
       ) : (
         <div className="flex-1" />
       )}
 
-      <div className="app-no-drag ml-auto flex items-center gap-1.5">
+      <div className="app-no-drag ml-auto flex items-center gap-2">
+        <button
+          type="button"
+          className="hidden max-w-[280px] items-center gap-2 rounded-xl border border-mesh-border bg-mesh-bg px-2.5 py-1.5 text-xs text-mesh-muted hover:border-mesh-borderBright hover:text-mesh-text md:inline-flex"
+          onClick={() => navigate('/settings/agents')}
+          title="智能体管理"
+        >
+          {connectedList.length ? (
+            connectedList.map((agent) => (
+              <span key={agent.id} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                <span className="h-1.5 w-1.5 rounded-full bg-mesh-success" />
+                {agent.name} 已连接
+              </span>
+            ))
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-mesh-dim" />
+              暂无已连接智能体
+            </span>
+          )}
+        </button>
+
         <div
           ref={notifyRef}
           className="relative"
@@ -136,7 +162,7 @@ export function TopBar() {
         >
           <button
             type="button"
-            className="rounded-mesh p-2 text-mesh-muted hover:bg-mesh-card hover:text-mesh-text"
+            className="rounded-xl p-2 text-mesh-muted hover:bg-mesh-cardHover hover:text-mesh-text"
             onClick={() => {
               clearLeaveTimer()
               setMenuOpen(false)
@@ -151,7 +177,7 @@ export function TopBar() {
             ) : null}
           </button>
           {notifyOpen ? (
-            <div className="absolute right-0 top-full z-50 mt-2 max-h-[min(24rem,70vh)] w-80 overflow-y-auto rounded-mesh border border-mesh-border bg-mesh-card p-2 shadow-mesh">
+            <div className="absolute right-0 top-full z-50 mt-2 max-h-[min(24rem,70vh)] w-80 overflow-y-auto rounded-xl border border-mesh-border bg-mesh-card p-2 shadow-mesh">
               <div className="flex items-center justify-between px-2 py-1.5">
                 <div className="text-xs font-medium text-mesh-muted">通知</div>
                 {unreadCount ? (
@@ -258,14 +284,14 @@ export function TopBar() {
                 className="block rounded-md px-2 py-2 text-sm hover:bg-mesh-cardHover"
                 onClick={() => setMenuOpen(false)}
               >
-                技能源配置
+                技能来源
               </Link>
               <Link
                 to="/settings/advanced"
                 className="block rounded-md px-2 py-2 text-sm hover:bg-mesh-cardHover"
                 onClick={() => setMenuOpen(false)}
               >
-                偏好设置
+                设置中心
               </Link>
             </div>
           ) : null}

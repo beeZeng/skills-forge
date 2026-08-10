@@ -74,7 +74,7 @@ function createWindow() {
   const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173'
   if (isDev) {
     console.log('[Nexus] loading', devUrl)
-    const target = `${devUrl.replace(/\/$/, '')}/#/skills/discover`
+    const target = `${devUrl.replace(/\/$/, '')}/#/dashboard`
     void mainWindow
       .loadURL(target)
       .then(() => {
@@ -98,7 +98,7 @@ function createWindow() {
 
   // Use loadFile (file://) — custom app:// often fails to serve Vite ES modules (black screen)
   void mainWindow
-    .loadFile(indexPath, { hash: '/skills/discover' })
+    .loadFile(indexPath, { hash: '/dashboard' })
     .then(() => {
       mainWindow?.show()
       mainWindow?.focus()
@@ -169,8 +169,21 @@ ipcMain.handle('dialog:openSkillPackage', async () => {
     title: '导入本地 Skill',
     properties: ['openFile', 'openDirectory'],
     filters: [
-      { name: 'Skill Packages', extensions: ['zip', 'skillpack', 'tar', 'gz', 'tgz'] },
+      { name: 'Skill Packages', extensions: ['zip', 'skillpack', 'md', 'tar', 'gz', 'tgz'] },
+      { name: 'Markdown', extensions: ['md'] },
       { name: 'All Files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || !result.filePaths[0]) return null
+  return result.filePaths[0]
+})
+
+ipcMain.handle('dialog:openPublishZip', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '上传 Skill 压缩包',
+    properties: ['openFile'],
+    filters: [
+      { name: 'ZIP', extensions: ['zip'] },
     ],
   })
   if (result.canceled || !result.filePaths[0]) return null

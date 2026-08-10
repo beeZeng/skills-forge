@@ -93,9 +93,11 @@ function mapCliItem(item, { sourceId, sourceName, baseUrl }) {
   const slug = item.slug || item.skillId || item.name
   if (!slug) return null
   const version = item.latestVersion || item.version || '0.0.0'
-  const updatedAt = item.updatedAt
-    ? new Date(item.updatedAt).toISOString().slice(0, 10)
-    : undefined
+  let updatedAt
+  if (item.updatedAt) {
+    const ms = new Date(item.updatedAt).getTime()
+    updatedAt = Number.isNaN(ms) ? String(item.updatedAt) : new Date(ms).toISOString()
+  }
   const base = String(baseUrl || '').replace(/\/+$/, '')
   const homepageUrl = base
     ? `${base}/skills/${encodeURIComponent(namespace)}/${encodeURIComponent(slug)}`

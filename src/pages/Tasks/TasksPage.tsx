@@ -1,13 +1,14 @@
-import { CheckCircle2, FolderOpen, Loader2, RotateCcw, XCircle } from 'lucide-react'
+import { CheckCircle2, FolderOpen, Loader2, XCircle } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { PathReveal } from '@/components/common/PathReveal'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { useAppStore } from '@/stores/app-store'
 import { cn } from '@/lib/utils'
 import type { TaskStatus } from '@/types'
 
 export function TasksPage() {
   const tasks = useAppStore((s) => s.tasks)
-  const retryTask = useAppStore((s) => s.retryTask)
   const cancelTask = useAppStore((s) => s.cancelTask)
   const highlightTaskId = useAppStore((s) => s.highlightTaskId)
   const setHighlightTaskId = useAppStore((s) => s.setHighlightTaskId)
@@ -37,24 +38,21 @@ export function TasksPage() {
 
   return (
     <div className="mx-auto max-w-[860px] space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold">任务日志</h1>
-        <p className="mt-1 text-sm text-mesh-dim">下载、安装、更新、导入、同步、取消同步与发布任务统一在此追踪</p>
-      </div>
+      <PageHeader description="安装、同步、更新等任务统一在此追踪进度与结果" />
 
       <div className="rounded-mesh border border-mesh-border bg-mesh-card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium">运行日志存放路径</div>
+            <div className="text-sm font-medium">运行日志目录</div>
             <p className="mt-1 text-xs text-mesh-dim">
               按天生成日志文件（以日期命名），保留最近 {logsRetainDays || 7} 天，便于排查故障
             </p>
-            <div className="mt-2 break-all font-mono text-xs text-mesh-muted">
-              {logsDirDisplay || '加载中…'}
+            <div className="mt-2">
+              <PathReveal label="本地日志目录" path={logsDirDisplay} hint={logsTodayFileDisplay ? `今日文件已就绪` : undefined} />
             </div>
             {logsTodayFileDisplay ? (
-              <div className="mt-1 break-all font-mono text-[11px] text-mesh-dim">
-                今日文件：{logsTodayFileDisplay}
+              <div className="mt-2">
+                <PathReveal label="今日日志文件" path={logsTodayFileDisplay} compact />
               </div>
             ) : null}
           </div>
@@ -110,15 +108,6 @@ export function TasksPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {task.status === 'failed' ? (
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1 rounded-md border border-mesh-border px-2.5 py-1.5 text-xs hover:bg-mesh-panel"
-                      onClick={() => retryTask(task.id)}
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" /> 重试
-                    </button>
-                  ) : null}
                   {task.status === 'running' || task.status === 'pending' ? (
                     <button
                       type="button"

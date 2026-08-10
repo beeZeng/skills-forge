@@ -10,6 +10,19 @@ import { CATALOG_STALE_MS } from '@/constants/sync'
 import { hubLogin, hubLogout, hubMe, hubMyNamespaces, normalizeHubBaseUrl } from '@/services/hub-auth'
 import { savePersistedState } from '@/services/persistence'
 import { listSkillsFromSource, testSourceConnection } from '@/services/skillhub-client'
+import {
+  analyticsSkillId,
+  applyStatsToSkill,
+  favoriteSkill,
+  getBulkSkillStats,
+  recordSkillDownload,
+  recordSkillInstall,
+  skillHotScore,
+  statsMetaFromSkill,
+  unfavoriteSkill,
+  type SkillStatsResult,
+} from '@/services/skill-analytics'
+import { indexEntryToSkill, readSkillIndex, replaceSkillIndex } from '@/services/skill-index'
 import { uid } from '@/lib/utils'
 import type {
   AgentInstallation,
@@ -35,6 +48,32 @@ import type {
 } from '@/types'
 
 let hubHeartbeatTimer: ReturnType<typeof setInterval> | null = null
+
+/** Snapshot of path settings at hydrate / after relaunch-applied state; used to clear restart banner on revert. */
+let sessionBaselineAgentPathOverrides: Record<string, string> = {}
+let sessionBaselineSkillsRoot = ''
+
+function normalizeComparablePath(value?: string) {
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
+
+function overridesEqual(a: Record<string, string>, b: Record<string, string>) {
+  const ak = Object.keys(a).sort()
+  const bk = Object.keys(b).sort()
+  if (ak.length !== bk.length) return false
+  return ak.every((k) => normalizeComparablePath(a[k]) === normalizeComparablePath(b[k]))
+}
+
+function computeRestartRequired(agentPathOverrides: Record<string, string>, skillsRootPath: string) {
+  return (
+    !overridesEqual(agentPathOverrides, sessionBaselineAgentPathOverrides) ||
+    normalizeComparablePath(skillsRootPath) !== normalizeComparablePath(sessionBaselineSkillsRoot)
+  )
+}
 
 async function confirmDialog(opts: { title: string; message: string; detail?: string }) {
   if (window.skillMesh?.dialog?.confirm) {
@@ -68,6 +107,13 @@ interface AppState {
   highlightTaskId: string | null
   storageUsedGb: number
   storageTotalGb: number
+  storageFreeGb: number
+  storageSkillsUsedGb: number
+  storageVolumeLabel: string
+  storagePath: string | null
+  logsDirDisplay: string | null
+  logsTodayFileDisplay: string | null
+  logsRetainDays: number
   syncServiceRunning: boolean
   theme: AppTheme
   newSkillsFolder: string
@@ -76,7 +122,13 @@ interface AppState {
   catalogSyncing: boolean
   catalogSyncMessage: string | null
   lastCatalogSyncedAt: string | null
+  /** Skill Index bootstrap: first-run sync in progress. */
+  indexInitializing: boolean
+  /** Skill Index has been loaded or synced at least once this session. */
+  indexReady: boolean
   defaultSyncAgentIds: string[]
+  /** Current / pending local skills repository root (display path). */
+  skillsRootPath: string
   toast: ToastItem | null
   account: AppAccount
   discoveredHub: DiscoveredHub | null
@@ -87,7 +139,8 @@ interface AppState {
   persist: () => void
   toggleSidebar: () => void
   setLoginOpen: (open: boolean) => void
-  login: (payload: { username: string; password: string }) => Promise<{ ok: boolean; message?: string }>
+  setPanguHubUrl: (url: string) => { ok: boolean; url?: string; message?: string }
+  login: (payload: { username: string; password: string; baseUrl?: string }) => Promise<{ ok: boolean; message?: string }>
   logout: () => Promise<void>
   refreshAccount: () => Promise<void>
   discoverPanguHub: () => Promise<void>
@@ -96,6 +149,7 @@ interface AppState {
   stopHubHeartbeat: () => void
   runHubHeartbeat: () => Promise<void>
   ensureCatalogFresh: () => Promise<{ ok: boolean; message: string; skipped?: boolean }>
+  bootstrapSkillIndex: () => Promise<{ ok: boolean; message: string }>
   retryFailedSources: () => Promise<{ ok: boolean; message: string }>
   setDefaultSyncAgentIds: (ids: string[]) => void
   toggleDefaultSyncAgent: (agentId: string) => void
@@ -121,6 +175,8 @@ interface AppState {
   updateAll: () => void
   deleteSkill: (uid: string) => Promise<void>
   toggleAgentSync: (skillUid: string, agentId: string) => void
+  /** Re-copy installed skill into one already-synced agent (or all synced agents). */
+  resyncSkill: (skillUid: string, agentId?: string) => void
   importLocalSkill: (filePath?: string | null) => void
   createSkill: (payload: { name: string; description?: string; content: string }) => void
   setNewSkillsFolder: (folder: string) => void
@@ -137,7 +193,14 @@ interface AppState {
   scanAgents: () => Promise<void>
   setAgents: (agents: AgentInstallation[]) => void
   saveAgentPathOverrides: (overrides: Record<string, string>) => Promise<'relaunch' | 'later' | 'cancel'>
+  /** Validate and save one agent path override. Rejects illegal paths. */
+  saveAgentPathOverride: (
+    agentId: string,
+    pathValue: string,
+  ) => Promise<{ ok: boolean; message?: string; choice?: 'relaunch' | 'later' | 'cancel' }>
   applyAgentPathOverrides: (agents: AgentInstallation[]) => AgentInstallation[]
+  validateAgentSkillPath: (pathValue: string) => Promise<{ ok: boolean; error?: string; path?: string; displayPath?: string }>
+  ensurePublishHubReady: () => Promise<{ ok: boolean; message?: string; source?: SkillSource }>
   submitPublish: (payload: {
     skillUid: string
     namespace: string
@@ -145,6 +208,32 @@ interface AppState {
     version?: string
     confirmWarnings?: boolean
   }) => Promise<{ ok: boolean; message?: string; confirmRequired?: boolean }>
+  /** Upload zip → detect → normalize → preview package (does not publish yet). */
+  preparePublishUpload: (payload: {
+    zipPath: string
+    name?: string
+    description?: string
+    version?: string
+    entry?: string
+  }) => Promise<import('@/vite-env').PublishPrepareResult>
+  finalizePublishUpload: (payload: {
+    sessionDir?: string
+    sessionId?: string
+    extractDir?: string
+    kind?: 'standard' | 'ordinary'
+    entry: string
+    name?: string
+    description?: string
+    version?: string
+    entryCandidates?: string[]
+  }) => Promise<import('@/vite-env').PublishPrepareResult>
+  submitPreparedPublish: (payload: {
+    prepared: import('@/vite-env').PublishPrepareResult
+    namespace: string
+    visibility: SkillVisibility
+    confirmWarnings?: boolean
+  }) => Promise<{ ok: boolean; message?: string; confirmRequired?: boolean }>
+  cleanupPublishUpload: (sessionDir?: string | null) => Promise<void>
   withdrawPublishReview: (publishId: string) => Promise<{ ok: boolean; message?: string }>
   deletePublishedSkill: (publishId: string) => Promise<{ ok: boolean; message?: string }>
   refreshPublishStatuses: (options?: { silent?: boolean }) => Promise<{ ok: boolean; updated: number; message?: string }>
@@ -158,8 +247,16 @@ interface AppState {
   setTheme: (theme: AppTheme) => void
   setSyncServiceRunning: (running: boolean) => void
   clearStorageCache: () => void
+  refreshStorageStats: () => Promise<void>
+  refreshLogsInfo: () => Promise<void>
+  openLogsDirectory: () => Promise<void>
   openSkillDirectory: (skillUid: string) => Promise<void>
   goDiscoverUpdates: () => void
+  /** Validate + save local skills repository root (restart required). */
+  saveSkillsRootPath: (
+    pathValue: string,
+  ) => Promise<{ ok: boolean; message?: string; choice?: 'relaunch' | 'later' | 'cancel' }>
+  refreshSkillsRootPath: () => Promise<void>
 }
 
 function normalizeSourceUrl(url?: string) {
@@ -202,14 +299,84 @@ function skillStatus(skill: Skill): SkillInstallFilter {
   return 'installed'
 }
 
+async function mergeLocalAnalytics(skills: Skill[], userId?: string): Promise<Skill[]> {
+  if (!skills.length) return skills
+  const items = skills.map((skill) => statsMetaFromSkill(skill, userId))
+  const bulk = await getBulkSkillStats(items, userId)
+  if (!bulk) return skills
+  return skills.map((skill) => {
+    const key = analyticsSkillId(skill)
+    const stats = bulk[key] as SkillStatsResult | undefined
+    if (!stats) return skill
+    return applyStatsToSkill(skill, { ...stats, ok: true })
+  })
+}
+
+function patchSkillStats(skills: Skill[], skillUid: string, stats: SkillStatsResult | null | undefined): Skill[] {
+  if (!stats?.ok) return skills
+  return skills.map((skill) => (skill.uid === skillUid ? applyStatsToSkill(skill, stats) : skill))
+}
+
+/** Merge Skill Index catalog rows into live skills without clobbering local install state. */
+function mergeIndexIntoSkills(current: Skill[], indexed: Skill[]): Skill[] {
+  const byUid = new Map<string, Skill>()
+  for (const skill of current) byUid.set(skill.uid, skill)
+  for (const remote of indexed) {
+    const prev = byUid.get(remote.uid)
+    if (!prev) {
+      byUid.set(remote.uid, remote)
+      continue
+    }
+    if (prev.origin === 'created' || prev.origin === 'imported') continue
+    byUid.set(remote.uid, {
+      ...remote,
+      installed: prev.installed,
+      favorite: prev.favorite,
+      syncedAgents: prev.syncedAgents,
+      lastSyncedAt: prev.lastSyncedAt,
+      localPath: prev.localPath,
+      agentInstallPath: prev.agentInstallPath,
+      contentHash: prev.contentHash,
+      contentSource: prev.contentSource || remote.contentSource,
+      zipPath: prev.zipPath,
+      zipHash: prev.zipHash,
+      manifest: prev.manifest,
+      version: prev.installed && prev.version ? prev.version : remote.version,
+      latestVersion: remote.latestVersion || remote.version,
+      updateAvailable:
+        prev.installed &&
+        !!(remote.latestVersion || remote.version) &&
+        (prev.version || '') !== (remote.latestVersion || remote.version),
+      installCount: remote.installCount ?? prev.installCount,
+      favoriteCount: remote.favoriteCount ?? prev.favoriteCount,
+      downloads: remote.downloads ?? prev.downloads,
+      skillScore: remote.skillScore ?? prev.skillScore,
+      badges: remote.badges ?? prev.badges,
+    })
+  }
+  return Array.from(byUid.values())
+}
+
 function applyPersisted(skills: Skill[], persisted: PersistedUiState | null): Skill[] {
   if (!persisted) return skills
   return skills.map((skill) => {
     const override = persisted.skillOverrides?.[skill.uid] ?? {}
-    const installed = persisted.installedUids?.includes(skill.uid) ?? skill.installed
+    const inInstalledList = persisted.installedUids?.includes(skill.uid)
+    const installed =
+      skill.origin === 'created' || skill.origin === 'imported'
+        ? Boolean(
+            inInstalledList ||
+              skill.installed ||
+              skill.localPath ||
+              skill.agentInstallPath ||
+              skill.content ||
+              skill.zipPath,
+          )
+        : (inInstalledList ?? skill.installed)
     const favorite = persisted.favorites?.includes(skill.uid) ?? skill.favorite
     const syncedAgents = persisted.syncedAgents?.[skill.uid] ?? skill.syncedAgents
     const merged = { ...skill, ...override, installed, favorite, syncedAgents }
+    if (!merged.localPath && merged.agentInstallPath) merged.localPath = merged.agentInstallPath
     if (merged.installed && merged.latestVersion && merged.version !== merged.latestVersion) {
       merged.updateAvailable = true
     }
@@ -237,14 +404,14 @@ function installedStubsFromPersisted(persisted: PersistedUiState | null): Skill[
       return {
         uid: skillUid,
         sourceId,
-        sourceName: sourceId,
-        namespace,
-        skillId,
-        name: skillId,
-        description: '',
+        sourceName: override.sourceName || sourceId,
+        namespace: override.namespace || namespace,
+        skillId: override.skillId || skillId,
+        name: override.name || skillId,
+        description: override.description || '',
         version,
         latestVersion,
-        author: '',
+        author: override.author || override.manifest?.author || '',
         tags: [],
         category: '',
         sizeLabel: '',
@@ -257,6 +424,15 @@ function installedStubsFromPersisted(persisted: PersistedUiState | null): Skill[
         syncedAgents: persisted.syncedAgents?.[skillUid] ?? [],
         localPath: override.localPath,
         origin: override.origin,
+        homepageUrl: override.homepageUrl,
+        githubUrl: override.githubUrl,
+        packageSource: override.packageSource,
+        contentHash: override.contentHash,
+        contentSource: override.contentSource,
+        zipPath: override.zipPath,
+        zipHash: override.zipHash,
+        agentInstallPath: override.agentInstallPath,
+        manifest: override.manifest,
       } satisfies Skill
     })
 }
@@ -287,28 +463,106 @@ const TASK_KIND_LABEL: Record<TaskKind, string> = {
 }
 
 const DEFAULT_NEW_SKILLS_FOLDER = '~/new_skills'
+const SESSION_TTL_MS = 48 * 60 * 60 * 1000
+
+function buildSessionExpiry(fromMs = Date.now()) {
+  return new Date(fromMs + SESSION_TTL_MS).toISOString()
+}
+
+function isSessionActive(expiresAt?: string | null) {
+  if (!expiresAt) return false
+  const ms = new Date(expiresAt).getTime()
+  return Number.isFinite(ms) && ms > Date.now()
+}
+
+function remainingSessionTtlMs(expiresAt?: string | null) {
+  if (!expiresAt) return 0
+  const ms = new Date(expiresAt).getTime() - Date.now()
+  return Number.isFinite(ms) && ms > 0 ? ms : 0
+}
+
+function clearAccountState(s: { panguHubUrl: string; sources: SkillSource[]; skills: Skill[] }, hubBaseUrl?: string) {
+  return {
+    account: { loggedIn: false, hubBaseUrl: hubBaseUrl || s.panguHubUrl } as AppAccount,
+    discoveredHub: null as DiscoveredHub | null,
+    sources: withoutPanguSources(s.sources),
+    skills: withoutGuestPanguSkills(s.skills),
+  }
+}
+
+function findConnectedPanguSource(sources: SkillSource[]) {
+  return sources.find((s) => s.id === PANGU_HUB_SOURCE_ID && s.accountBound && s.enabled)
+}
+
+function wrapCreatedSkillMarkdown(payload: {
+  name: string
+  description?: string
+  version?: string
+  content?: string
+}) {
+  const name = payload.name.trim() || 'Skill'
+  const description = (payload.description || '用户新建的 Skill').replace(/\r?\n/g, ' ').trim()
+  const version = payload.version || '0.1.0'
+  const raw = String(payload.content || '').trim()
+  let body = raw
+  if (raw.startsWith('---')) {
+    const end = raw.indexOf('\n---', 3)
+    body = end >= 0 ? raw.slice(end + 4).replace(/^\r?\n/, '').trim() : raw
+  }
+  if (!body) {
+    body = `# ${name}\n\n${description}\n\n## 使用说明\n\n在此编写 Skill 指令与步骤。\n`
+  }
+  return `---\nname: ${name}\ndescription: ${description}\nversion: ${version}\n---\n\n${body}\n`
+}
+
+function extractMarkdownDescription(content: string, fallback = '用户新建的 Skill') {
+  const lines = String(content || '').split(/\r?\n/)
+  let inFrontmatter = false
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    if (trimmed === '---') {
+      inFrontmatter = !inFrontmatter
+      continue
+    }
+    if (inFrontmatter) {
+      const m = trimmed.match(/^description:\s*(.+)$/i)
+      if (m?.[1]) return m[1].replace(/^['"]|['"]$/g, '').trim() || fallback
+      continue
+    }
+    if (trimmed.startsWith('#')) continue
+    return trimmed
+  }
+  return fallback
+}
+const DEFAULT_SKILLS_ROOT = '~/.skillmesh'
 
 const APP_THEMES: AppTheme[] = [
   'system',
-  'dark',
-  'light',
-  'sapphiredusk',
-  'tron',
-  'gildedgrove',
-  'gloom',
-  'desertbloom',
+  'deepspace',
+  'futurewhite',
+  'obsidian',
+  'aurora',
+  'verdant',
 ]
 
 const LEGACY_THEME_MAP: Record<string, AppTheme> = {
-  blue: 'sapphiredusk',
-  floral: 'gildedgrove',
-  pink: 'gloom',
+  light: 'futurewhite',
+  dark: 'deepspace',
+  sapphiredusk: 'deepspace',
+  tron: 'obsidian',
+  gildedgrove: 'verdant',
+  gloom: 'obsidian',
+  desertbloom: 'futurewhite',
+  blue: 'deepspace',
+  floral: 'verdant',
+  pink: 'obsidian',
 }
 
 function normalizeTheme(theme: string | undefined): AppTheme {
-  if (!theme) return 'dark'
+  if (!theme) return 'deepspace'
   if ((APP_THEMES as string[]).includes(theme)) return theme as AppTheme
-  return LEGACY_THEME_MAP[theme] ?? 'dark'
+  return LEGACY_THEME_MAP[theme] ?? 'deepspace'
 }
 
 function applyTheme(theme: AppTheme) {
@@ -351,25 +605,207 @@ function buildTaskMeta(
   }
 }
 
-async function ensureSkillPackageOnDisk(skill: Skill): Promise<string | undefined> {
+async function ensureSkillPackageOnDisk(
+  skill: Skill,
+  options?: {
+    forceFetch?: boolean
+    conflictResolution?: 'overwrite' | 'update' | 'keep' | 'cancel'
+    skipAgentInstall?: boolean
+  },
+): Promise<{
+  localPath?: string
+  contentHash?: string
+  contentSource?: string
+  zipPath?: string
+  zipHash?: string
+  agentInstallPath?: string
+  manifest?: Skill['manifest']
+  cancelled?: boolean
+}> {
   if (window.skillMesh?.skills?.ensurePackage) {
-    const result = await window.skillMesh.skills.ensurePackage({
-      skillId: skill.skillId,
-      name: skill.name,
-      description: skill.description,
-      version: skill.latestVersion || skill.version,
-      sourceId: skill.sourceId,
-      sourceName: skill.sourceName,
-      namespace: skill.namespace,
-      latestVersion: skill.latestVersion,
-      localPath: skill.localPath,
-      content: skill.content,
-    })
-    return result.localPath
+    const source = useAppStore.getState().sources.find((s) => s.id === skill.sourceId)
+    let packageSource = skill.packageSource
+    if (
+      source?.registryUrl &&
+      (!packageSource?.baseUrl) &&
+      (packageSource?.kind === 'skillhub' ||
+        !packageSource ||
+        source.type === 'custom' ||
+        skill.sourceId === 'panguhub' ||
+        skill.sourceId === 'xfyun-skillhub')
+    ) {
+      packageSource = {
+        kind: 'skillhub',
+        ...packageSource,
+        baseUrl: source.registryUrl,
+        namespace: packageSource?.namespace || skill.namespace,
+        slug: packageSource?.slug || skill.skillId,
+        version: packageSource?.version || skill.latestVersion || skill.version,
+      }
+    }
+    const local = skill.origin === 'created' || skill.origin === 'imported' || skill.sourceId === 'local'
+
+    const invokeEnsure = (conflictResolution?: 'overwrite' | 'update' | 'keep' | 'cancel') =>
+      window.skillMesh!.skills.ensurePackage({
+        uid: skill.uid,
+        skillId: skill.skillId,
+        name: skill.name,
+        description: skill.description,
+        version: skill.latestVersion || skill.version,
+        sourceId: skill.sourceId,
+        sourceName: skill.sourceName,
+        namespace: skill.namespace,
+        latestVersion: skill.latestVersion,
+        localPath: skill.localPath,
+        content: local ? skill.content : undefined,
+        homepageUrl: skill.homepageUrl,
+        githubUrl: skill.githubUrl,
+        packageSource,
+        registryUrl: source?.registryUrl,
+        token: source?.token,
+        origin: skill.origin,
+        forceFetch: options?.forceFetch ?? !local,
+        contentHash: skill.contentHash,
+        author: skill.author,
+        tags: skill.tags,
+        license: skill.license,
+        conflictResolution: conflictResolution || options?.conflictResolution,
+        skipAgentInstall: options?.skipAgentInstall === true,
+      })
+
+    let result = await invokeEnsure(options?.conflictResolution)
+
+    if (!result.ok && (result.conflict === 'hash_mismatch' || result.conflict === 'version_update')) {
+      const dialogApi = window.skillMesh?.dialog?.skillConflict
+      const decision = dialogApi
+        ? await dialogApi({
+            conflict: result.conflict,
+            skill_id: result.incoming?.skill_id || result.manifest?.skill_id || skill.skillId,
+            version: result.incoming?.version || skill.version,
+            message: result.error,
+            existing: result.existing,
+            incoming: result.incoming,
+          })
+        : { resolution: 'cancel' as const }
+
+      if (decision.resolution === 'overwrite' || decision.resolution === 'update') {
+        const resolution = decision.resolution === 'update' ? 'update' : 'overwrite'
+        // Prefer resolve via zip if available, else re-ensure with overwrite/update
+        if (result.zipPath && window.skillMesh?.skills?.resolveConflict) {
+          const resolved = await window.skillMesh.skills.resolveConflict({
+            zipPath: result.zipPath,
+            zipHash: result.zipHash,
+            sourceId: skill.sourceId,
+            skillUid: skill.uid,
+            conflictResolution: resolution,
+            skillMeta: {
+              name: skill.name,
+              skillId: skill.skillId,
+              sourceId: skill.sourceId,
+              version: skill.latestVersion || skill.version,
+              description: skill.description,
+            },
+          })
+          if (!resolved.ok) throw new Error(resolved.error || '安装失败')
+          return {
+            localPath: result.localPath,
+            contentHash: result.contentHash,
+            contentSource: result.contentSource,
+            zipPath: result.zipPath,
+            zipHash: result.zipHash,
+            agentInstallPath: resolved.installPath,
+            manifest: resolved.manifest || result.manifest,
+          }
+        }
+        result = await invokeEnsure(resolution)
+      } else {
+        return { cancelled: true }
+      }
+    }
+
+    if (!result.ok) {
+      throw new Error(result.error || 'Skill 包下载失败')
+    }
+    return {
+      localPath: result.localPath,
+      contentHash: result.contentHash,
+      contentSource: result.contentSource,
+      zipPath: result.zipPath,
+      zipHash: result.zipHash,
+      agentInstallPath: result.agentInstallPath,
+      manifest: result.manifest,
+    }
   }
-  if (skill.localPath) return skill.localPath
+  if (skill.localPath) {
+    return {
+      localPath: skill.localPath,
+      contentHash: skill.contentHash,
+      agentInstallPath: skill.agentInstallPath,
+      zipPath: skill.zipPath,
+      zipHash: skill.zipHash,
+      manifest: skill.manifest,
+    }
+  }
   const version = skill.latestVersion || skill.version
-  return `~/.skillmesh/skills/${skill.sourceId}/${skill.namespace || 'default'}/${skill.skillId}/${version}`
+  const root = (useAppStore.getState().skillsRootPath || DEFAULT_SKILLS_ROOT).replace(/\/$/, '')
+  return {
+    localPath: `${root}/skills/${skill.sourceId}/${skill.namespace || 'default'}/${skill.skillId}/${version}`,
+  }
+}
+
+/** Drop installed flags when local package was deleted / is stub-only / hash mismatch. */
+async function reconcileInstalledSkills(skills: Skill[]): Promise<Skill[]> {
+  const api = window.skillMesh?.skills?.verifyPackages
+  if (!api) return skills
+  // Never wipe local created/imported packages — publish & reopen depend on localPath.
+  const targets = skills.filter(
+    (s) => s.installed && s.localPath && s.origin !== 'created' && s.origin !== 'imported',
+  )
+  if (!targets.length) return skills
+  try {
+    const res = await api(
+      targets.map((s) => ({
+        uid: s.uid,
+        localPath: s.localPath,
+        contentHash: s.contentHash,
+        name: s.name,
+        description: s.description,
+        version: s.version,
+        sourceId: s.sourceId,
+        sourceName: s.sourceName,
+      })),
+    )
+    const results = res?.results || {}
+    return skills.map((skill) => {
+      if (skill.origin === 'created' || skill.origin === 'imported') {
+        // Keep owned skills installed when a package path or content remains.
+        if (skill.localPath || skill.agentInstallPath || skill.content || skill.zipPath) {
+          return { ...skill, installed: true }
+        }
+        return skill
+      }
+      if (!skill.installed || !skill.localPath) return skill
+      const verified = results[skill.uid]
+      if (!verified) return skill
+      if (verified.ok) {
+        return {
+          ...skill,
+          contentHash: verified.contentHash || skill.contentHash,
+        }
+      }
+      return {
+        ...skill,
+        installed: false,
+        updateAvailable: false,
+        localPath: undefined,
+        contentHash: undefined,
+        contentSource: undefined,
+        syncedAgents: [],
+      }
+    })
+  } catch {
+    return skills
+  }
 }
 
 function isLocalMineSkill(skill: Skill) {
@@ -393,6 +829,7 @@ async function syncSkillToAgent(skill: Skill, agent: AgentInstallation, action: 
       sourceName: skill.sourceName,
       namespace: skill.namespace,
       localPath: skill.localPath,
+      agentInstallPath: skill.agentInstallPath,
     },
     agentSkillPath: agent.skillPath,
   })
@@ -468,7 +905,7 @@ function formatSyncTime(iso?: string | null) {
 
 function createTask(partial: Omit<TaskItem, 'id' | 'createdAt' | 'updatedAt' | 'status'> & { status?: TaskItem['status'] }): TaskItem {
   const now = new Date().toISOString()
-  return {
+  const task: TaskItem = {
     id: uid('task'),
     status: partial.status ?? 'pending',
     createdAt: now,
@@ -476,6 +913,18 @@ function createTask(partial: Omit<TaskItem, 'id' | 'createdAt' | 'updatedAt' | '
     progress: partial.progress ?? 0,
     ...partial,
   }
+  void window.skillMesh?.logs?.append?.({
+    level: 'info',
+    message: `[task] ${task.kind} · ${task.status} · ${task.title}${task.subtitle ? ` · ${task.subtitle}` : ''}`,
+    meta: {
+      id: task.id,
+      skillUid: task.skillUid,
+      agentId: task.agentId,
+      skillName: task.skillName,
+      sourceName: task.sourceName,
+    },
+  })
+  return task
 }
 
 async function runProgress(
@@ -530,16 +979,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   notifications: [],
   highlightTaskId: null,
   storageUsedGb: 0,
-  storageTotalGb: 100,
+  storageTotalGb: 0,
+  storageFreeGb: 0,
+  storageSkillsUsedGb: 0,
+  storageVolumeLabel: '',
+  storagePath: null,
+  logsDirDisplay: null,
+  logsTodayFileDisplay: null,
+  logsRetainDays: 7,
   syncServiceRunning: true,
-  theme: 'dark',
+  theme: 'deepspace',
   newSkillsFolder: DEFAULT_NEW_SKILLS_FOLDER,
   agentPathOverrides: {},
   restartRequired: false,
   catalogSyncing: false,
   catalogSyncMessage: null,
   lastCatalogSyncedAt: null,
+  indexInitializing: false,
+  indexReady: false,
   defaultSyncAgentIds: [],
+  skillsRootPath: DEFAULT_SKILLS_ROOT,
   toast: null,
   account: { loggedIn: false, hubBaseUrl: DEFAULT_PANGU_HUB_URL },
   discoveredHub: null,
@@ -551,16 +1010,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     applyTheme(theme)
     const panguHubUrl = normalizeHubBaseUrl(persisted?.panguHubUrl || DEFAULT_PANGU_HUB_URL) || DEFAULT_PANGU_HUB_URL
     const owned = applyPersisted(
-      (persisted?.createdSkills ?? []).filter(
-        (s) =>
-          (s.origin === 'created' || s.origin === 'imported') && !LEGACY_MOCK_SKILL_UIDS.has(s.uid),
-      ),
+      (persisted?.createdSkills ?? [])
+        .filter(
+          (s) =>
+            (s.origin === 'created' || s.origin === 'imported') && !LEGACY_MOCK_SKILL_UIDS.has(s.uid),
+        )
+        .map((s) => {
+          // Repair older persistence bugs: path saved under agentInstallPath, installed cleared.
+          const localPath = s.localPath || s.agentInstallPath
+          return {
+            ...s,
+            localPath,
+            installed: Boolean(localPath || s.content || s.zipPath || s.installed),
+          }
+        }),
       persisted,
     )
     const installedStubs = installedStubsFromPersisted(persisted)
     const ownedUids = new Set(owned.map((s) => s.uid))
     const mergedSkills = [...owned, ...installedStubs.filter((s) => !ownedUids.has(s.uid))]
     const overrides = persisted?.agentPathOverrides ?? {}
+    sessionBaselineAgentPathOverrides = { ...overrides }
     const agents = DEFAULT_AGENTS.map((agent) => {
       const defaultSkillPath = agent.defaultSkillPath || agent.skillPath
       return {
@@ -582,8 +1052,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
 
     const accountHint = persisted?.accountHint
+    // Legacy sessions without expiresAt are allowed once, then stamped with 48h on refresh.
+    const sessionStillValid =
+      !!accountHint?.loggedIn &&
+      (!accountHint.sessionExpiresAt || isSessionActive(accountHint.sessionExpiresAt))
+    const restoredExpiry = sessionStillValid
+      ? accountHint?.sessionExpiresAt || buildSessionExpiry()
+      : undefined
     // Guest / session not restored yet: never show a leftover connected Pangu Hub
-    if (!accountHint?.loggedIn) {
+    if (!sessionStillValid) {
       sources = withoutPanguSources(sources)
     } else {
       // Session will be revalidated asynchronously — don't show stale "connected"
@@ -689,7 +1166,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           skill.origin === 'created' ||
           skill.origin === 'imported'),
     )
-    if (!accountHint?.loggedIn) {
+    if (!sessionStillValid) {
       cleanedSkills = withoutGuestPanguSkills(cleanedSkills)
     }
     set({
@@ -712,44 +1189,88 @@ export const useAppStore = create<AppState>((set, get) => ({
       agents,
       panguHubUrl,
       account: {
-        loggedIn: false,
+        loggedIn: sessionStillValid,
         hubBaseUrl: panguHubUrl,
-        userId: accountHint?.userId,
-        displayName: accountHint?.displayName,
-        email: accountHint?.email,
+        userId: sessionStillValid ? accountHint?.userId : undefined,
+        displayName: sessionStillValid ? accountHint?.displayName : undefined,
+        email: sessionStillValid ? accountHint?.email : undefined,
+        sessionExpiresAt: restoredExpiry,
       },
       discoveredHub: null,
       defaultSyncAgentIds: persisted?.defaultSyncAgentIds ?? [],
+      skillsRootPath: (() => {
+        const root = persisted?.skillsRootPath || DEFAULT_SKILLS_ROOT
+        sessionBaselineSkillsRoot = root
+        return root
+      })(),
       lastCatalogSyncedAt: persisted?.lastCatalogSyncedAt ?? null,
       catalogSyncMessage: persisted?.lastCatalogSyncedAt
         ? `列表缓存 · 上次刷新 ${formatSyncTime(persisted.lastCatalogSyncedAt)}`
         : null,
     })
 
-    void get().ensureCatalogFresh().catch(() => undefined)
-    if (accountHint?.loggedIn) {
+    if (sessionStillValid) {
       void get().refreshAccount()
+    } else if (accountHint?.loggedIn && accountHint.sessionExpiresAt) {
+      get().showToast('登录已超过 48 小时，请重新登录', 'warning')
     }
+    void (async () => {
+      const reconciled = await reconcileInstalledSkills(get().skills)
+      const withStats = await mergeLocalAnalytics(reconciled, get().account.userId)
+      set({ skills: withStats })
+      get().persist()
+      await get().bootstrapSkillIndex()
+    })().catch(() => undefined)
+    void window.skillMesh?.skills?.scanLocal?.({ forceFull: false }).catch(() => undefined)
+    void get().refreshSkillsRootPath().catch(() => undefined)
+    void get().refreshStorageStats().catch(() => undefined)
+    void get().refreshLogsInfo().catch(() => undefined)
   },
 
   setLoginOpen: (open) => set({ loginOpen: open }),
 
-  login: async ({ username, password }) => {
-    const baseUrl = get().panguHubUrl || DEFAULT_PANGU_HUB_URL
+  setPanguHubUrl: (url) => {
+    const normalized = normalizeHubBaseUrl(url) || ''
+    if (!normalized) {
+      return { ok: false, message: '请填写有效的 SkillHub 地址' }
+    }
+    set((s) => ({
+      panguHubUrl: normalized,
+      account: s.account.loggedIn
+        ? s.account
+        : { ...s.account, hubBaseUrl: normalized },
+    }))
+    get().persist()
+    return { ok: true, url: normalized }
+  },
+
+    login: async ({ username, password, baseUrl: baseUrlInput }) => {
+    const baseUrl =
+      normalizeHubBaseUrl(baseUrlInput || get().panguHubUrl || DEFAULT_PANGU_HUB_URL) ||
+      DEFAULT_PANGU_HUB_URL
     const result = await hubLogin({ baseUrl, username, password })
     if (!result.ok || !result.account) {
       get().showToast(result.message || '登录失败', 'error')
       return { ok: false, message: result.message }
     }
+    const sessionExpiresAt = buildSessionExpiry()
     set({
-      account: { ...result.account, hubBaseUrl: baseUrl, loggedIn: true },
+      account: {
+        ...result.account,
+        hubBaseUrl: baseUrl,
+        loggedIn: true,
+        sessionExpiresAt,
+      },
       loginOpen: false,
       panguHubUrl: baseUrl,
     })
     get().showToast(`已登录 ${result.account.displayName || username}`, 'success')
     get().persist()
     await get().discoverPanguHub()
-    if (get().sources.some((s) => s.id === PANGU_HUB_SOURCE_ID && s.accountBound)) {
+    // Auto-connect Pangu Hub after successful login — no manual step.
+    if (get().discoveredHub?.namespaces?.length) {
+      await get().connectDiscoveredHub()
+    } else if (get().sources.some((s) => s.id === PANGU_HUB_SOURCE_ID && s.accountBound)) {
       get().startHubHeartbeat()
       await get().refreshCatalog(PANGU_HUB_SOURCE_ID)
     }
@@ -760,37 +1281,73 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().stopHubHeartbeat()
     const baseUrl = get().account.hubBaseUrl || get().panguHubUrl
     await hubLogout(baseUrl)
-    set((s) => ({
-      account: { loggedIn: false, hubBaseUrl: s.panguHubUrl },
-      discoveredHub: null,
-      sources: withoutPanguSources(s.sources),
-      skills: withoutGuestPanguSkills(s.skills),
-    }))
+    set((s) => clearAccountState(s))
     get().showToast('已退出登录', 'info')
     get().persist()
   },
 
   refreshAccount: async () => {
     const baseUrl = get().panguHubUrl || DEFAULT_PANGU_HUB_URL
-    const result = await hubMe(baseUrl)
-    if (!result.ok || !result.loggedIn || !result.account) {
+    const current = get().account
+    if (current.sessionExpiresAt && !isSessionActive(current.sessionExpiresAt)) {
       get().stopHubHeartbeat()
-      set((s) => ({
-        account: { loggedIn: false, hubBaseUrl: baseUrl },
-        discoveredHub: null,
-        sources: withoutPanguSources(s.sources),
-        skills: withoutGuestPanguSkills(s.skills),
-      }))
+      await hubLogout(baseUrl)
+      set((s) => clearAccountState(s, baseUrl))
+      get().showToast('登录已超过 48 小时，请重新登录', 'warning')
+      get().persist()
+      return
+    }
+    const persistTtlMs = remainingSessionTtlMs(current.sessionExpiresAt) || SESSION_TTL_MS
+    const result = await hubMe(baseUrl, { persistTtlMs })
+    if (!result.ok || !result.loggedIn || !result.account) {
+      // Within the 48h client window: keep local login across restarts / transient Hub errors.
+      // Only explicit logout or TTL expiry clears the session.
+      if (current.loggedIn && isSessionActive(current.sessionExpiresAt)) {
+        return
+      }
+      get().stopHubHeartbeat()
+      set((s) => clearAccountState(s, baseUrl))
       get().persist()
       return
     }
     set({
-      account: { ...result.account, loggedIn: true, hubBaseUrl: baseUrl },
+      account: {
+        ...result.account,
+        loggedIn: true,
+        hubBaseUrl: baseUrl,
+        // Keep original login expiry; stamp 48h for legacy sessions missing it.
+        sessionExpiresAt: current.sessionExpiresAt || buildSessionExpiry(),
+      },
       panguHubUrl: baseUrl,
     })
     get().persist()
     await get().discoverPanguHub()
-    if (get().sources.some((s) => s.id === PANGU_HUB_SOURCE_ID && s.accountBound && s.enabled)) {
+    // Restore / auto-connect hub after session revalidation
+    if (get().discoveredHub?.namespaces?.length) {
+      const already = get().sources.some(
+        (s) => s.id === PANGU_HUB_SOURCE_ID && s.accountBound && s.enabled && s.authStatus !== 'lost',
+      )
+      if (!already) {
+        await get().connectDiscoveredHub()
+      } else {
+        set((s) => ({
+          sources: s.sources.map((src) =>
+            src.id === PANGU_HUB_SOURCE_ID && src.accountBound
+              ? { ...src, authStatus: 'ok' as const, status: 'connected' as SourceStatus }
+              : src,
+          ),
+        }))
+        get().startHubHeartbeat()
+      }
+    } else if (get().sources.some((s) => s.id === PANGU_HUB_SOURCE_ID && s.accountBound && s.enabled)) {
+      // hubMe succeeded — mark Hub auth healthy even if status was still "checking"
+      set((s) => ({
+        sources: s.sources.map((src) =>
+          src.id === PANGU_HUB_SOURCE_ID && src.accountBound
+            ? { ...src, authStatus: 'ok' as const, status: 'connected' as SourceStatus }
+            : src,
+        ),
+      }))
       get().startHubHeartbeat()
     }
   },
@@ -805,14 +1362,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     const result = await hubMyNamespaces(baseUrl)
     if (!result.ok) {
       if (result.unauthorized) {
+        // Server session lost: within 48h keep local login; only TTL / logout clears it.
+        if (isSessionActive(account.sessionExpiresAt)) {
+          set((s) => ({
+            discoveredHub: null,
+            sources: s.sources.map((src) =>
+              isPanguSource(src)
+                ? { ...src, status: 'disconnected' as SourceStatus, authStatus: 'lost' as const }
+                : src,
+            ),
+          }))
+          return
+        }
         get().stopHubHeartbeat()
-        set((s) => ({
-          account: { loggedIn: false, hubBaseUrl: baseUrl },
-          discoveredHub: null,
-          sources: withoutPanguSources(s.sources),
-          skills: withoutGuestPanguSkills(s.skills),
-        }))
-        get().showToast('登录已失效，请重新登录', 'warning')
+        set((s) => clearAccountState(s, baseUrl))
+        get().showToast('登录已超过 48 小时，请重新登录', 'warning')
         get().persist()
       }
       return
@@ -927,18 +1491,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     const pangu = get().sources.find((s) => s.id === PANGU_HUB_SOURCE_ID && s.accountBound)
     if (!account.loggedIn || !pangu?.enabled) return
 
+    if (account.sessionExpiresAt && !isSessionActive(account.sessionExpiresAt)) {
+      get().stopHubHeartbeat()
+      const baseUrl = account.hubBaseUrl || get().panguHubUrl
+      await hubLogout(baseUrl)
+      set((s) => clearAccountState(s))
+      get().showToast('登录已超过 48 小时，请重新登录', 'warning')
+      get().persist()
+      return
+    }
+
     const baseUrl = pangu.registryUrl || account.hubBaseUrl || get().panguHubUrl
     const result = await hubMyNamespaces(baseUrl)
 
     if (!result.ok && result.unauthorized) {
+      // Keep app login for the full 48h window; only disconnect Hub source.
+      if (isSessionActive(account.sessionExpiresAt)) {
+        set((s) => ({
+          sources: s.sources.map((src) =>
+            src.id === PANGU_HUB_SOURCE_ID
+              ? { ...src, status: 'disconnected' as SourceStatus, authStatus: 'lost' as const }
+              : src,
+          ),
+        }))
+        get().persist()
+        return
+      }
       get().stopHubHeartbeat()
-      set((s) => ({
-        account: { loggedIn: false, hubBaseUrl: s.panguHubUrl },
-        discoveredHub: null,
-        sources: withoutPanguSources(s.sources),
-        skills: withoutGuestPanguSkills(s.skills),
-      }))
-      get().showToast('盘古 Hub 会话已失效，源已断开', 'warning')
+      set((s) => clearAccountState(s))
+      get().showToast('登录已超过 48 小时，请重新登录', 'warning')
       get().persist()
       return
     }
@@ -1009,7 +1590,22 @@ export const useAppStore = create<AppState>((set, get) => ({
             latestVersion: skill.latestVersion,
             updateAvailable: skill.updateAvailable,
             localPath: skill.localPath,
+            contentHash: skill.contentHash,
+            contentSource: skill.contentSource,
+            zipPath: skill.zipPath,
+            zipHash: skill.zipHash,
+            agentInstallPath: skill.agentInstallPath,
+            manifest: skill.manifest,
+            author: skill.author,
             origin: skill.origin,
+            homepageUrl: skill.homepageUrl,
+            githubUrl: skill.githubUrl,
+            packageSource: skill.packageSource,
+            name: skill.name,
+            description: skill.description,
+            sourceName: skill.sourceName,
+            namespace: skill.namespace,
+            skillId: skill.skillId,
           },
         ]),
       ),
@@ -1029,8 +1625,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         userId: s.account.userId,
         displayName: s.account.displayName,
         email: s.account.email,
+        sessionExpiresAt: s.account.sessionExpiresAt,
       },
       defaultSyncAgentIds: s.defaultSyncAgentIds,
+      skillsRootPath: s.skillsRootPath,
       lastCatalogSyncedAt: s.lastCatalogSyncedAt ?? undefined,
     }
     void savePersistedState(payload)
@@ -1100,10 +1698,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   openSkill: (skillUid) => set({ selectedSkillUid: skillUid, drawerOpen: true }),
   closeDrawer: () => set({ drawerOpen: false }),
   toggleFavorite: (skillUid) => {
+    const skill = get().skills.find((x) => x.uid === skillUid)
+    if (!skill) return
+    const next = !skill.favorite
     set((s) => ({
-      skills: s.skills.map((skill) => (skill.uid === skillUid ? { ...skill, favorite: !skill.favorite } : skill)),
+      skills: s.skills.map((item) => (item.uid === skillUid ? { ...item, favorite: next } : item)),
     }))
     get().persist()
+    void (async () => {
+      const meta = statsMetaFromSkill(skill, get().account.userId)
+      const result = next ? await favoriteSkill(meta) : await unfavoriteSkill(meta)
+      if (result?.ok) {
+        set((s) => ({ skills: patchSkillStats(s.skills, skillUid, result) }))
+      }
+    })().catch(() => undefined)
   },
 
   installSkill: (skillUid) => {
@@ -1115,12 +1723,45 @@ export const useAppStore = create<AppState>((set, get) => ({
       kind: 'install',
       status: 'running',
       skillUid,
-      progress: 0,
+      progress: 8,
     })
     set((s) => ({ tasks: [task, ...s.tasks] }))
-    void runProgress(get, set, task.id, () => {
-      void (async () => {
-        const localPath = await ensureSkillPackageOnDisk(skill)
+    void (async () => {
+      try {
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  ...buildTaskMeta('install', { skill, phase: '正在拉取完整 Skill 内容' }),
+                  progress: 35,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        const packed = await ensureSkillPackageOnDisk(skill, { forceFetch: true })
+        if (packed.cancelled) {
+          set((s) => ({
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? {
+                    ...t,
+                    status: 'cancelled',
+                    error: '用户取消安装（保留本地旧版本）',
+                    progress: 100,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : t,
+            ),
+          }))
+          get().showToast('已取消安装，保留本地版本', 'info')
+          get().persist()
+          return
+        }
+        // Download counted after package content successfully retrieved (24h dedupe).
+        void recordSkillDownload(statsMetaFromSkill(skill, get().account.userId)).catch(() => undefined)
+        const localPath = packed.localPath
         set((s) => ({
           skills: s.skills.map((item) =>
             item.uid === skillUid
@@ -1130,6 +1771,14 @@ export const useAppStore = create<AppState>((set, get) => ({
                   updateAvailable: false,
                   version: item.latestVersion || item.version,
                   localPath,
+                  contentHash: packed.contentHash,
+                  contentSource: packed.contentSource,
+                  zipPath: packed.zipPath,
+                  zipHash: packed.zipHash,
+                  agentInstallPath: packed.agentInstallPath,
+                  manifest: packed.manifest,
+                  author: packed.manifest?.author || item.author,
+                  content: undefined,
                 }
               : item,
           ),
@@ -1145,12 +1794,42 @@ export const useAppStore = create<AppState>((set, get) => ({
               : t,
           ),
         }))
+        // Install counted only after registry/package success (supports offline queue).
+        const installStats = await recordSkillInstall({
+          ...statsMetaFromSkill(
+            { ...skill, version: skill.latestVersion || skill.version },
+            get().account.userId,
+          ),
+          agent_type: 'Nexus Agent',
+          offline: !navigator.onLine,
+        }).catch(() => null)
+        if (installStats?.ok) {
+          set((s) => ({ skills: patchSkillStats(s.skills, skillUid, installStats) }))
+        }
         const linked = await applyDefaultAgentSync(get, set, skillUid)
         const linkNote = linked.length ? `，已同步到 ${linked.join('、')}` : ''
         get().pushNotification(`${skill.name} 安装完成${linkNote}`, task.id, 'success')
         get().persist()
-      })()
-    })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '安装失败'
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  status: 'failed',
+                  error: message,
+                  progress: t.progress ?? 35,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        get().pushNotification(`${skill.name} 安装失败：${message}`, task.id, 'error')
+        get().showToast(`${skill.name} 安装失败：${message}`, 'error')
+        get().persist()
+      }
+    })()
   },
 
   updateSkill: (skillUid) => {
@@ -1162,14 +1841,45 @@ export const useAppStore = create<AppState>((set, get) => ({
       kind: 'update',
       status: 'running',
       skillUid,
-      progress: 0,
+      progress: 8,
     })
     set((s) => ({ tasks: [task, ...s.tasks] }))
-    void runProgress(get, set, task.id, () => {
-      void (async () => {
+    void (async () => {
+      try {
         const nextVersion = skill.latestVersion || skill.version
         const nextSkill = { ...skill, version: nextVersion, updateAvailable: false }
-        const localPath = await ensureSkillPackageOnDisk(nextSkill)
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  ...buildTaskMeta('update', { skill: nextSkill, phase: '正在拉取完整 Skill 内容' }),
+                  progress: 40,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        const packed = await ensureSkillPackageOnDisk(nextSkill, { forceFetch: true })
+        if (packed.cancelled) {
+          set((s) => ({
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? {
+                    ...t,
+                    status: 'cancelled',
+                    error: '用户取消更新（保留本地旧版本）',
+                    progress: 100,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : t,
+            ),
+          }))
+          get().showToast('已取消更新，保留本地版本', 'info')
+          get().persist()
+          return
+        }
+        const localPath = packed.localPath
         set((s) => ({
           skills: s.skills.map((item) =>
             item.uid === skillUid
@@ -1178,6 +1888,14 @@ export const useAppStore = create<AppState>((set, get) => ({
                   version: nextVersion,
                   updateAvailable: false,
                   localPath,
+                  contentHash: packed.contentHash,
+                  contentSource: packed.contentSource,
+                  zipPath: packed.zipPath,
+                  zipHash: packed.zipHash,
+                  agentInstallPath: packed.agentInstallPath,
+                  manifest: packed.manifest,
+                  author: packed.manifest?.author || item.author,
+                  content: undefined,
                 }
               : item,
           ),
@@ -1207,8 +1925,25 @@ export const useAppStore = create<AppState>((set, get) => ({
         }))
         get().pushNotification(`${skill.name} 已更新到 v${nextVersion}${linkNote}`, task.id, 'success')
         get().persist()
-      })()
-    })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '更新失败'
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  status: 'failed',
+                  error: message,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        get().pushNotification(`${skill.name} 更新失败：${message}`, task.id, 'error')
+        get().showToast(`${skill.name} 更新失败：${message}`, 'error')
+        get().persist()
+      }
+    })()
   },
 
   updateAll: () => {
@@ -1253,13 +1988,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ tasks: [task, ...s.tasks] }))
     void runProgress(get, set, task.id, () => {
       void (async () => {
-        if (skill.localPath) {
-          await window.skillMesh?.skills.removePackage(skill.localPath)
+        if (skill.localPath || skill.name || skill.manifest?.skill_id) {
+          await window.skillMesh?.skills.removePackage({
+            localPath: skill.localPath,
+            name: skill.name,
+            skill_id: skill.manifest?.skill_id,
+            skillId: skill.skillId,
+          })
         }
         set((s) => ({
           skills: s.skills.map((item) =>
             item.uid === skillUid
-              ? { ...item, installed: false, updateAvailable: false, syncedAgents: [], localPath: undefined }
+              ? {
+                  ...item,
+                  installed: false,
+                  updateAvailable: false,
+                  syncedAgents: [],
+                  localPath: undefined,
+                  contentHash: undefined,
+                  contentSource: undefined,
+                  zipPath: undefined,
+                  zipHash: undefined,
+                  agentInstallPath: undefined,
+                  manifest: undefined,
+                }
               : item,
           ),
           tasks: s.tasks.map((t) =>
@@ -1315,11 +2067,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       void runProgress(get, set, task.id, () => {
         void (async () => {
           if (!skill.localPath) {
-            const localPath = await ensureSkillPackageOnDisk(skill)
+            const packed = await ensureSkillPackageOnDisk(skill, { forceFetch: true })
+            const localPath = packed.localPath
             set((s) => ({
-              skills: s.skills.map((item) => (item.uid === skillUid ? { ...item, localPath } : item)),
+              skills: s.skills.map((item) =>
+                item.uid === skillUid
+                  ? { ...item, localPath, contentHash: packed.contentHash, contentSource: packed.contentSource }
+                  : item,
+              ),
             }))
             skill.localPath = localPath
+            skill.contentHash = packed.contentHash
           }
 
           const syncResult = await syncSkillToAgent(skill, agent, enabling ? 'link' : 'unlink')
@@ -1381,12 +2139,130 @@ export const useAppStore = create<AppState>((set, get) => ({
     })()
   },
 
+  resyncSkill: (skillUid, agentId) => {
+    void (async () => {
+      const skill = get().skills.find((x) => x.uid === skillUid)
+      if (!skill?.installed) {
+        get().showToast('请先安装 Skill', 'warning')
+        return
+      }
+      const targets = agentId
+        ? get().agents.filter((a) => a.id === agentId && a.installed)
+        : get().agents.filter((a) => a.installed && skill.syncedAgents.includes(a.id))
+      if (!targets.length) {
+        get().showToast(agentId ? '未找到可同步的智能体' : '当前没有已同步的智能体，请先开启同步', 'warning')
+        return
+      }
+
+      for (const agent of targets) {
+        if (!agent.skillPath) continue
+        if (get().isAgentSyncBusy(skillUid, agent.id)) continue
+
+        const meta = buildTaskMeta('sync', { skill, agent, phase: '正在重新同步到智能体' })
+        const task = createTask({
+          ...meta,
+          kind: 'sync',
+          status: 'running',
+          skillUid,
+          agentId: agent.id,
+          progress: 8,
+        })
+        set((s) => ({ tasks: [task, ...s.tasks] }))
+
+        try {
+          let working = skill
+          if (!working.localPath) {
+            const packed = await ensureSkillPackageOnDisk(working, { forceFetch: true })
+            const localPath = packed.localPath
+            set((s) => ({
+              skills: s.skills.map((item) =>
+                item.uid === skillUid
+                  ? { ...item, localPath, contentHash: packed.contentHash, contentSource: packed.contentSource }
+                  : item,
+              ),
+            }))
+            working = {
+              ...working,
+              localPath,
+              contentHash: packed.contentHash,
+              contentSource: packed.contentSource,
+            }
+          }
+
+          const syncResult = await syncSkillToAgent(working, agent, 'link')
+          if (!syncResult?.ok) {
+            set((s) => ({
+              tasks: s.tasks.map((t) =>
+                t.id === task.id
+                  ? {
+                      ...t,
+                      status: 'failed',
+                      error: syncResult?.error || '重新同步失败',
+                      updatedAt: new Date().toISOString(),
+                    }
+                  : t,
+              ),
+            }))
+            get().pushNotification(`${skill.name} → ${agent.name} 同步失败`, task.id, 'error')
+            get().showToast(`${agent.name}：${syncResult?.error || '重新同步失败'}`, 'error')
+            get().persist()
+            continue
+          }
+
+          set((s) => ({
+            skills: s.skills.map((item) => {
+              if (item.uid !== skillUid) return item
+              return {
+                ...item,
+                syncedAgents: Array.from(new Set([...item.syncedAgents, agent.id])),
+                lastSyncedAt: new Date().toISOString(),
+              }
+            }),
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? {
+                    ...t,
+                    ...buildTaskMeta('sync', { skill: working, agent, phase: '重新同步完成' }),
+                    status: 'success',
+                    progress: 100,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : t,
+            ),
+          }))
+          get().pushNotification(`${skill.name} 已重新同步到 ${agent.name}`, task.id, 'success')
+          get().persist()
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '重新同步失败'
+          set((s) => ({
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? { ...t, status: 'failed', error: message, updatedAt: new Date().toISOString() }
+                : t,
+            ),
+          }))
+          get().showToast(`${agent.name}：${message}`, 'error')
+          get().persist()
+        }
+      }
+    })()
+  },
+
   createSkill: ({ name, description, content }) => {
     const trimmed = name.trim()
-    if (!trimmed) return
+    if (!trimmed) {
+      get().showToast('请填写 Skill 名称', 'warning')
+      return
+    }
     const skillId = uid('created').replace(/^created_/, '')
     const folder = get().newSkillsFolder.replace(/\/$/, '')
-    const md = content.trim() || `# ${trimmed}\n\n${description?.trim() || '用户新建的 Skill'}\n`
+    const desc = (description?.trim() || extractMarkdownDescription(content || '')).trim()
+    const md = wrapCreatedSkillMarkdown({
+      name: trimmed,
+      description: desc,
+      version: '0.1.0',
+      content,
+    })
     const skill: Skill = {
       uid: `created:user:${skillId}`,
       sourceId: 'local',
@@ -1394,13 +2270,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       namespace: 'user',
       skillId,
       name: trimmed,
-      description: description?.trim() || '用户新建的 Skill',
+      description: desc,
       version: '0.1.0',
       latestVersion: '0.1.0',
       author: '本地用户',
       tags: ['新建'],
       category: '办公效率',
-      sizeLabel: '0.5 MB',
+      sizeLabel: '—',
       license: 'MIT',
       updatedAt: new Date().toISOString().slice(0, 10),
       installed: true,
@@ -1421,12 +2297,40 @@ export const useAppStore = create<AppState>((set, get) => ({
       progress: 0,
     })
     set((s) => ({ tasks: [task, ...s.tasks] }))
-    void runProgress(get, set, task.id, () => {
-      void (async () => {
-        const localPath = (await ensureSkillPackageOnDisk(skill)) || skill.localPath
-        skill.localPath = localPath
+    void (async () => {
+      try {
         set((s) => ({
-          skills: [skill, ...s.skills],
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? { ...t, progress: 40, updatedAt: new Date().toISOString() }
+              : t,
+          ),
+        }))
+        // Create writes package only; sync to Agent is a separate user action.
+        const packed = await ensureSkillPackageOnDisk(skill, {
+          skipAgentInstall: true,
+          conflictResolution: 'overwrite',
+        })
+        if (!packed.localPath && !packed.manifest) {
+          throw new Error('创建失败：未能写入 Skill 包')
+        }
+        const localPath = packed.localPath || skill.localPath
+        skill.localPath = localPath
+        skill.installed = true
+        skill.contentHash = packed.contentHash
+        skill.contentSource = packed.contentSource || 'created'
+        skill.zipPath = packed.zipPath
+        skill.zipHash = packed.zipHash
+        // Keep a fallback path field for older publish/pack code paths.
+        if (!skill.agentInstallPath) skill.agentInstallPath = localPath
+        if (packed.manifest) {
+          skill.manifest = packed.manifest
+          skill.skillId = packed.manifest.skill_id || skill.skillId
+        }
+        // Retain markdown body so publish can rebuild the package if the folder path is lost.
+        skill.content = md
+        set((s) => ({
+          skills: [skill, ...s.skills.filter((item) => item.uid !== skill.uid)],
           tasks: s.tasks.map((t) =>
             t.id === task.id
               ? {
@@ -1441,10 +2345,28 @@ export const useAppStore = create<AppState>((set, get) => ({
           selectedSkillUid: skill.uid,
           drawerOpen: true,
         }))
-        get().pushNotification(`已新建 ${skill.name}`, task.id)
+        get().pushNotification(`已新建 ${skill.name}`, task.id, 'success')
+        get().showToast(`已新建 ${skill.name}`, 'success')
         get().persist()
-      })()
-    })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '创建失败'
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  status: 'failed',
+                  progress: 100,
+                  error: message,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        get().showToast(message, 'error')
+        get().persist()
+      }
+    })()
   },
 
   setNewSkillsFolder: (folder) => {
@@ -1470,54 +2392,107 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ tasks: [task, ...s.tasks] }))
     void runProgress(get, set, task.id, () => {
       void (async () => {
-        const skillId = uid('imported')
-        const skillName = name.replace(/\.(zip|skillpack|tar\.gz|tgz)$/i, '')
-        const skill: Skill = {
-          uid: `local:user:${skillId}`,
-          sourceId: 'local',
-          sourceName: '本地',
-          namespace: 'user',
-          skillId,
-          name: skillName,
-          description: '从本地导入的 Skill 包，已加入本地 Skill Repository。',
-          version: '0.1.0',
-          latestVersion: '0.1.0',
-          author: '本地用户',
-          tags: ['本地导入'],
-          category: '办公效率',
-          sizeLabel: '2.0 MB',
-          license: 'MIT',
-          updatedAt: new Date().toISOString().slice(0, 10),
-          installed: true,
-          updateAvailable: false,
-          favorite: false,
-          downloads: 0,
-          syncedAgents: [],
-          localPath: filePath || undefined,
-          origin: 'imported',
+        try {
+          const skillId = uid('imported')
+          const skillName = name.replace(/\.(zip|skillpack|tar\.gz|tgz)$/i, '')
+          const skill: Skill = {
+            uid: `local:user:${skillId}`,
+            sourceId: 'local',
+            sourceName: '本地',
+            namespace: 'user',
+            skillId,
+            name: skillName,
+            description: '从本地导入的 Skill 包，已加入本地 Skill Repository。',
+            version: '0.1.0',
+            latestVersion: '0.1.0',
+            author: '本地用户',
+            tags: ['本地导入'],
+            category: '办公效率',
+            sizeLabel: '—',
+            license: 'MIT',
+            updatedAt: new Date().toISOString().slice(0, 10),
+            installed: true,
+            updateAvailable: false,
+            favorite: false,
+            downloads: 0,
+            syncedAgents: [],
+            localPath: filePath || undefined,
+            origin: 'imported',
+          }
+          const packed = await ensureSkillPackageOnDisk(skill, { conflictResolution: 'overwrite' })
+          if (packed.cancelled) {
+            set((s) => ({
+              tasks: s.tasks.map((t) =>
+                t.id === task.id
+                  ? {
+                      ...t,
+                      status: 'failed',
+                      progress: 100,
+                      error: '已取消导入',
+                      updatedAt: new Date().toISOString(),
+                    }
+                  : t,
+              ),
+            }))
+            get().showToast('已取消导入', 'info')
+            return
+          }
+          if (!packed.localPath && !packed.manifest) {
+            throw new Error('导入失败：未能解析 Skill 包')
+          }
+          skill.localPath = packed.localPath || skill.localPath
+          skill.agentInstallPath = packed.agentInstallPath || skill.agentInstallPath
+          skill.contentHash = packed.contentHash
+          skill.contentSource = packed.contentSource
+          skill.zipPath = packed.zipPath
+          skill.zipHash = packed.zipHash
+          if (packed.manifest) {
+            skill.manifest = packed.manifest
+            skill.name = packed.manifest.name || skill.name
+            skill.skillId = packed.manifest.skill_id || skill.skillId
+            skill.version = packed.manifest.version || skill.version
+            skill.latestVersion = packed.manifest.version || skill.latestVersion
+            skill.description = packed.manifest.description || skill.description
+            skill.author = packed.manifest.author || skill.author
+            skill.tags = packed.manifest.tags?.length ? packed.manifest.tags : skill.tags
+          }
+          set((s) => ({
+            skills: [skill, ...s.skills],
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? {
+                    ...t,
+                    ...buildTaskMeta('import', { skill, phase: '导入完成' }),
+                    status: 'success',
+                    progress: 100,
+                    skillUid: skill.uid,
+                    filePath,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : t,
+            ),
+            selectedSkillUid: skill.uid,
+            drawerOpen: true,
+          }))
+          get().pushNotification(`已导入 ${skill.name}`, task.id, 'success')
+          get().persist()
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '导入失败'
+          set((s) => ({
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? {
+                    ...t,
+                    status: 'failed',
+                    progress: 100,
+                    error: message,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : t,
+            ),
+          }))
+          get().showToast(message, 'error')
         }
-        const localPath = await ensureSkillPackageOnDisk(skill)
-        skill.localPath = localPath || skill.localPath
-        set((s) => ({
-          skills: [skill, ...s.skills],
-          tasks: s.tasks.map((t) =>
-            t.id === task.id
-              ? {
-                  ...t,
-                  ...buildTaskMeta('import', { skill, phase: '导入完成' }),
-                  status: 'success',
-                  progress: 100,
-                  skillUid: skill.uid,
-                  filePath,
-                  updatedAt: new Date().toISOString(),
-                }
-              : t,
-          ),
-          selectedSkillUid: skill.uid,
-          drawerOpen: true,
-        }))
-        get().pushNotification(`已导入 ${skill.name}`, task.id, 'success')
-        get().persist()
       })()
     })
   },
@@ -1657,11 +2632,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { ok: true, message: '列表刷新进行中', skipped: true }
     }
     const last = get().lastCatalogSyncedAt
-    // First launch: do not auto-pull — user must click「刷新列表」
     if (!last) {
-      const message = '首次启动需手动刷新列表'
-      set({ catalogSyncMessage: message })
-      return { ok: true, message, skipped: true }
+      return get().refreshCatalog({ silent: true, force: true })
     }
     const age = Date.now() - new Date(last).getTime()
     if (!Number.isNaN(age) && age < CATALOG_STALE_MS) {
@@ -1670,6 +2642,47 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { ok: true, message, skipped: true }
     }
     return get().refreshCatalog({ silent: true, force: true })
+  },
+
+  bootstrapSkillIndex: async () => {
+    try {
+      const indexed = await readSkillIndex()
+      if (indexed?.skills?.length) {
+        const catalog = indexed.skills.map(indexEntryToSkill)
+        let merged = mergeIndexIntoSkills(get().skills, catalog)
+        merged = await mergeLocalAnalytics(merged, get().account.userId)
+        set({
+          skills: merged,
+          indexReady: true,
+          indexInitializing: false,
+          lastCatalogSyncedAt: indexed.updatedAt || get().lastCatalogSyncedAt,
+          catalogSyncMessage: indexed.updatedAt
+            ? `本地索引 · ${catalog.length} 个 Skill · ${formatSyncTime(indexed.updatedAt)}`
+            : `本地索引 · ${catalog.length} 个 Skill`,
+        })
+        // Background freshness check — does not block home search.
+        void get().ensureCatalogFresh().catch(() => undefined)
+        return { ok: true, message: `已加载本地索引 ${catalog.length} 个 Skill` }
+      }
+
+      set({
+        indexInitializing: true,
+        catalogSyncMessage: '正在初始化 Skill 库，同步技能来源…',
+      })
+      const result = await get().refreshCatalog({ force: true, silent: true })
+      set({
+        indexInitializing: false,
+        indexReady: true,
+      })
+      return {
+        ok: result.ok,
+        message: result.ok ? 'Skill 库初始化完成' : result.message || 'Skill 库初始化失败',
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Skill 索引加载失败'
+      set({ indexInitializing: false, indexReady: true })
+      return { ok: false, message }
+    }
   },
 
   retryFailedSources: async () => {
@@ -1831,7 +2844,10 @@ export const useAppStore = create<AppState>((set, get) => ({
               syncedAgents: prev?.syncedAgents ?? [],
               lastSyncedAt: prev?.lastSyncedAt,
               localPath: prev?.localPath,
-              content: prev?.content,
+              contentHash: prev?.contentHash,
+              contentSource: prev?.contentSource,
+              // Do not carry stale inline 简介 into installs
+              content: undefined,
               version,
               latestVersion,
               updateAvailable: installed && !!latestVersion && version !== latestVersion,
@@ -1865,11 +2881,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       const message = ok
         ? `已刷新 ${remoteBySource.size} 个源，共 ${totalSkills} 个 Skill${failed ? `（${failed} 个失败）` : ''}`
         : `列表刷新失败（${notes.join('，')}）`
+
+      // Verify local packages still exist / are not stubs — clear fake "已安装"
+      const reconciled = await reconcileInstalledSkills(get().skills)
+      const withStats = await mergeLocalAnalytics(reconciled, get().account.userId)
       set({
+        skills: withStats,
         catalogSyncing: false,
         catalogSyncMessage: message,
         lastCatalogSyncedAt: ok ? nowIso : get().lastCatalogSyncedAt,
+        indexReady: ok || get().indexReady,
+        indexInitializing: false,
       })
+      if (ok) {
+        void replaceSkillIndex(withStats).catch(() => undefined)
+      }
       if (!silent) {
         get().showToast(message, ok ? 'success' : 'error')
       } else if (!ok) {
@@ -1914,9 +2940,119 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setAgents: (agents) => set({ agents: get().applyAgentPathOverrides(agents) }),
 
-  saveAgentPathOverrides: async (overrides) => {
-    set({ agentPathOverrides: overrides, restartRequired: true })
+  validateAgentSkillPath: async (pathValue) => {
+    const raw = (pathValue || '').trim()
+    if (!raw) return { ok: false, error: '路径不能为空' }
+    const api = window.skillMesh?.agents?.validateSkillPath
+    if (api) return api({ path: raw })
+
+    // Browser fallback (no Electron IPC)
+    if (raw.includes('\0') || /[\r\n\t]/.test(raw)) {
+      return { ok: false, error: '路径包含非法字符' }
+    }
+    const looksHome = raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')
+    const looksAbs = /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(raw)
+    if (!looksHome && !looksAbs) {
+      return { ok: false, error: '请使用绝对路径或以 ~ 开头的路径' }
+    }
+    if (/[<>"|?*]/.test(raw.replace(/^[a-zA-Z]:/, ''))) {
+      return { ok: false, error: '路径包含非法字符（<>:"|?*）' }
+    }
+    return { ok: true, path: raw, displayPath: raw }
+  },
+
+  saveAgentPathOverride: async (agentId, pathValue) => {
+    const agent = get().agents.find((a) => a.id === agentId)
+    if (!agent) return { ok: false, message: '未找到该智能体' }
+
+    const raw = (pathValue || '').trim()
+    const def = (agent.defaultSkillPath || '').trim()
+    const current =
+      (get().agentPathOverrides[agentId] || agent.skillPath || agent.defaultSkillPath || '').trim()
+
+    const validated = await get().validateAgentSkillPath(raw)
+    if (!validated.ok) {
+      const message = validated.error || '路径不合法，无法保存'
+      get().showToast(message, 'error')
+      return { ok: false, message }
+    }
+
+    const toStore = validated.displayPath || validated.path || raw
+
+    // Unchanged vs current / default → no-op (no restart prompt)
+    const sameAsCurrent =
+      raw === current ||
+      toStore === current ||
+      (validated.path && current && validated.path.replace(/\\/g, '/').toLowerCase() === current.replace(/\\/g, '/').toLowerCase())
+    const sameAsDefault = def && (toStore === def || raw === def || validated.displayPath === def)
+    const hadOverride = Boolean(get().agentPathOverrides[agentId])
+    if (sameAsCurrent && !(sameAsDefault && hadOverride)) {
+      get().showToast('路径未更改', 'info')
+      return { ok: true, choice: 'cancel' }
+    }
+
+    const next = { ...get().agentPathOverrides }
+    if (sameAsDefault) {
+      delete next[agentId]
+    } else {
+      next[agentId] = toStore
+    }
+
+    const needsRestart = computeRestartRequired(next, get().skillsRootPath)
+    set({
+      agentPathOverrides: next,
+      restartRequired: needsRestart,
+      agents: get().applyAgentPathOverrides(get().agents),
+    })
     get().persist()
+
+    if (!needsRestart) {
+      get().showToast('路径已恢复为当前生效配置，无需重启', 'success')
+      return { ok: true, choice: 'cancel' }
+    }
+
+    const choice = window.skillMesh?.dialog.restartPrompt
+      ? await window.skillMesh.dialog.restartPrompt({
+          title: '路径已修改',
+          message: `${agent.name} 的 Skill 路径已保存，重启后生效。`,
+          detail: '可选择立即重启，或稍后手动重启应用。',
+        })
+      : window.confirm(`${agent.name} 路径已保存，是否立即重启？`)
+        ? 'relaunch'
+        : 'later'
+    if (choice === 'relaunch') {
+      await window.skillMesh?.app?.relaunch()
+    }
+    return { ok: true, choice }
+  },
+
+  saveAgentPathOverrides: async (overrides) => {
+    const agents = get().agents
+    const cleaned: Record<string, string> = {}
+    for (const [agentId, value] of Object.entries(overrides)) {
+      const raw = (value || '').trim()
+      if (!raw) continue
+      const agent = agents.find((a) => a.id === agentId)
+      const def = (agent?.defaultSkillPath || '').trim()
+      const validated = await get().validateAgentSkillPath(raw)
+      if (!validated.ok) {
+        get().showToast(`${agent?.name || agentId}：${validated.error || '路径不合法'}`, 'error')
+        return 'cancel'
+      }
+      const toStore = validated.displayPath || validated.path || raw
+      if (!def || (toStore !== def && raw !== def)) cleaned[agentId] = toStore
+    }
+    const needsRestart = computeRestartRequired(cleaned, get().skillsRootPath)
+    set({
+      agentPathOverrides: cleaned,
+      restartRequired: needsRestart,
+      agents: get().applyAgentPathOverrides(get().agents.map((a) => ({ ...a }))),
+    })
+    get().persist()
+    if (!needsRestart) {
+      get().showToast('路径未相对当前生效配置变化，无需重启', 'info')
+      return 'cancel'
+    }
     const choice = window.skillMesh?.dialog.restartPrompt
       ? await window.skillMesh.dialog.restartPrompt({
           title: '路径已修改',
@@ -1932,14 +3068,81 @@ export const useAppStore = create<AppState>((set, get) => ({
     return choice
   },
 
-  submitPublish: async ({ skillUid, namespace, visibility, version, confirmWarnings }) => {
-    if (!get().account.loggedIn) {
+  ensurePublishHubReady: async () => {
+    const account = get().account
+    if (!account.loggedIn) {
       get().showToast('游客不能发布，请先登录', 'warning')
       set({ loginOpen: true })
       return { ok: false, message: '未登录' }
     }
+    if (account.sessionExpiresAt && !isSessionActive(account.sessionExpiresAt)) {
+      get().stopHubHeartbeat()
+      await hubLogout(account.hubBaseUrl || get().panguHubUrl)
+      set((s) => clearAccountState(s))
+      get().showToast('登录已超过 48 小时，请重新登录', 'warning')
+      set({ loginOpen: true })
+      get().persist()
+      return { ok: false, message: '登录已过期' }
+    }
+
+    let source = findConnectedPanguSource(get().sources)
+    const needsRecover = !source || source.authStatus === 'lost' || source.authStatus === 'checking'
+    if (needsRecover) {
+      const baseUrl = source?.registryUrl || account.hubBaseUrl || get().panguHubUrl
+      const nsResult = await hubMyNamespaces(baseUrl)
+      if (nsResult.ok && nsResult.namespaces.length) {
+        set({
+          discoveredHub: {
+            baseUrl,
+            name: PANGU_HUB_NAME,
+            namespaces: nsResult.namespaces,
+            connected: false,
+          },
+        })
+        await get().connectDiscoveredHub()
+        source = findConnectedPanguSource(get().sources)
+      } else if (nsResult.unauthorized) {
+        // Local login still valid, but Hub cookie is gone — need a fresh login for publish.
+        get().showToast('盘古 Hub 登录凭证已失效，请重新登录后再发布', 'warning')
+        set({ loginOpen: true })
+        return { ok: false, message: 'Hub 会话失效' }
+      } else if (!source || source.authStatus === 'lost') {
+        get().showToast(nsResult.message || '无法验证盘古 Hub 连接，请稍后重试', 'warning')
+        return { ok: false, message: nsResult.message || 'Hub 未就绪' }
+      }
+    }
+
+    source = findConnectedPanguSource(get().sources)
+    if (!source) {
+      get().showToast('请先连接盘古 Hub', 'warning')
+      return { ok: false, message: '企业源未连接' }
+    }
+    if (source.authStatus === 'lost') {
+      get().showToast('盘古 Hub 会话已断开，请重新登录后再发布', 'warning')
+      set({ loginOpen: true })
+      return { ok: false, message: 'Hub 会话失效' }
+    }
+    // Treat checking as ok once namespaces are present (publish will use live cookies).
+    if (source.authStatus !== 'ok') {
+      set((s) => ({
+        sources: s.sources.map((src) =>
+          src.id === PANGU_HUB_SOURCE_ID
+            ? { ...src, authStatus: 'ok' as const, status: 'connected' as SourceStatus }
+            : src,
+        ),
+      }))
+      source = findConnectedPanguSource(get().sources) || source
+    }
+    return { ok: true, source }
+  },
+
+  submitPublish: async ({ skillUid, namespace, visibility, version, confirmWarnings }) => {
+    const ready = await get().ensurePublishHubReady()
+    if (!ready.ok || !ready.source) {
+      return { ok: false, message: ready.message || '未就绪' }
+    }
     const skill = get().skills.find((s) => s.uid === skillUid)
-    const source = get().sources.find((s) => s.id === PANGU_HUB_SOURCE_ID && s.accountBound)
+    const source = ready.source
     if (!skill) {
       get().showToast('未找到可发布的 Skill', 'warning')
       return { ok: false, message: 'Skill 不存在' }
@@ -1947,10 +3150,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (skill.origin !== 'created' && skill.origin !== 'imported') {
       get().showToast('仅支持发布新建或本地导入的 Skill', 'warning')
       return { ok: false, message: '类型不支持' }
-    }
-    if (!source || !source.enabled || source.authStatus === 'lost') {
-      get().showToast('请先登录并一键连接盘古 Hub', 'warning')
-      return { ok: false, message: '企业源未连接' }
     }
     if (!namespace) {
       get().showToast('请选择命名空间', 'warning')
@@ -1988,8 +3187,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           sourceId: skill.sourceId,
           sourceName: skill.sourceName,
           namespace: skill.namespace,
-          localPath: skill.localPath,
+          localPath: skill.localPath || skill.agentInstallPath,
+          agentInstallPath: skill.agentInstallPath || skill.localPath,
           content: skill.content,
+          zipPath: skill.zipPath,
+          origin: skill.origin,
+          author: skill.author,
+          manifest: skill.manifest,
         },
         version: publishVersion,
       })
@@ -2013,6 +3217,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         return { ok: false, message }
       }
 
+      if (packed.localPath && packed.localPath !== skill.localPath) {
+        set((s) => ({
+          skills: s.skills.map((item) =>
+            item.uid === skillUid
+              ? {
+                  ...item,
+                  localPath: packed.localPath,
+                  agentInstallPath: item.agentInstallPath || packed.localPath,
+                  installed: true,
+                }
+              : item,
+          ),
+        }))
+        get().persist()
+      }
+
       set((s) => ({
         tasks: s.tasks.map((t) =>
           t.id === task.id ? { ...t, progress: 55, subtitle: '正在上传到盘古 Hub…' } : t,
@@ -2025,7 +3245,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         visibility,
         zipPath: packed.zipPath,
         confirmWarnings: !!confirmWarnings,
-        tmpDir: packed.tmpDir,
+        tmpDir: packed.tmpDir ?? undefined,
       })
 
       if (!result.ok) {
@@ -2046,6 +3266,21 @@ export const useAppStore = create<AppState>((set, get) => ({
           get().persist()
           return { ok: false, message: result.message, confirmRequired: true }
         }
+        const authLost =
+          result.status === 401 ||
+          result.status === 403 ||
+          /未登录|请先登录|unauthorized|login/i.test(result.message || '')
+        if (authLost) {
+          set((s) => ({
+            sources: s.sources.map((src) =>
+              src.id === PANGU_HUB_SOURCE_ID
+                ? { ...src, authStatus: 'lost' as const, status: 'disconnected' as SourceStatus }
+                : src,
+            ),
+          }))
+          get().showToast('盘古 Hub 登录凭证已失效，请重新登录后再发布', 'warning')
+          set({ loginOpen: true })
+        }
         set((s) => ({
           tasks: s.tasks.map((t) =>
             t.id === task.id
@@ -2059,7 +3294,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               : t,
           ),
         }))
-        get().showToast(result.message || '发布失败', 'error')
+        if (!authLost) get().showToast(result.message || '发布失败', 'error')
         get().persist()
         return { ok: false, message: result.message }
       }
@@ -2089,7 +3324,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? '已发布'
             : remoteStatus === 'uploaded'
               ? '已上传'
-              : '已提交审核'
+              : '审核中'
       set((s) => ({
         publishItems: [item, ...s.publishItems.filter((p) => p.id !== item.id)],
         skills: s.skills.map((sk) =>
@@ -2117,8 +3352,267 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? `${skill.name} 已发布`
             : remoteStatus === 'uploaded'
               ? `${skill.name} 已上传`
-              : `${skill.name} 已提交审核`,
-        'success',
+              : `${skill.name} 审核中`,
+        remoteStatus === 'reviewing' ? 'info' : 'success',
+      )
+      get().persist()
+      return { ok: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '发布失败'
+      set((s) => ({
+        tasks: s.tasks.map((t) =>
+          t.id === task.id
+            ? {
+                ...t,
+                status: 'failed',
+                progress: 100,
+                error: message,
+                updatedAt: new Date().toISOString(),
+              }
+            : t,
+        ),
+      }))
+      get().showToast(message, 'error')
+      get().persist()
+      return { ok: false, message }
+    }
+  },
+
+  preparePublishUpload: async ({ zipPath, name, description, version, entry }) => {
+    if (!window.skillMesh?.skills?.preparePublish) {
+      get().showToast('当前环境不支持上传发布（需桌面客户端）', 'error')
+      return { ok: false, error: '无 IPC' }
+    }
+    if (!zipPath || !/\.zip$/i.test(zipPath)) {
+      get().showToast('仅支持上传 .zip 文件', 'warning')
+      return { ok: false, error: '仅支持 zip' }
+    }
+    const account = get().account
+    const existingSkillIds = get()
+      .skills.map((s) => s.manifest?.skill_id || s.skillId)
+      .filter(Boolean) as string[]
+    const result = await window.skillMesh.skills.preparePublish({
+      zipPath,
+      username: account.userId || account.displayName || 'user',
+      userId: account.userId,
+      author: account.displayName || account.userId || 'user',
+      displayName: account.displayName,
+      name,
+      description,
+      version,
+      entry,
+      existingSkillIds,
+    })
+    if (!result.ok) {
+      get().showToast(result.error || '规范化失败', 'error')
+    } else if (result.needsEntrySelection) {
+      get().showToast('请选择 Skill 入口文件', 'info')
+    } else if (result.ready) {
+      get().showToast('Skill 已规范化，可预览后发布', 'success')
+    }
+    return result
+  },
+
+  finalizePublishUpload: async (payload) => {
+    if (!window.skillMesh?.skills?.finalizePublish) {
+      return { ok: false, error: '无 IPC' }
+    }
+    const account = get().account
+    const existingSkillIds = get()
+      .skills.map((s) => s.manifest?.skill_id || s.skillId)
+      .filter(Boolean) as string[]
+    const result = await window.skillMesh.skills.finalizePublish({
+      ...payload,
+      username: account.userId || account.displayName || 'user',
+      author: account.displayName || account.userId || 'user',
+      existingSkillIds,
+    })
+    if (!result.ok) get().showToast(result.error || '规范化失败', 'error')
+    else if (result.ready) get().showToast('Skill 包已就绪', 'success')
+    return result
+  },
+
+  cleanupPublishUpload: async (sessionDir) => {
+    if (!sessionDir || !window.skillMesh?.skills?.cleanupPublish) return
+    await window.skillMesh.skills.cleanupPublish({ sessionDir })
+  },
+
+  submitPreparedPublish: async ({ prepared, namespace, visibility, confirmWarnings }) => {
+    const ready = await get().ensurePublishHubReady()
+    if (!ready.ok || !ready.source) {
+      return { ok: false, message: ready.message || '未就绪' }
+    }
+    const source = ready.source
+    if (!namespace) {
+      get().showToast('请选择命名空间', 'warning')
+      return { ok: false, message: '缺少命名空间' }
+    }
+    if (!prepared?.ok || !prepared.zipPath || !prepared.manifest) {
+      get().showToast('请先完成 Skill 规范化预览', 'warning')
+      return { ok: false, message: '包未就绪' }
+    }
+    if (!window.skillMesh?.hub?.publish) {
+      get().showToast('当前环境不支持发布（需桌面客户端）', 'error')
+      return { ok: false, message: '无 IPC' }
+    }
+
+    const baseUrl = source.registryUrl || get().account.hubBaseUrl || get().panguHubUrl
+    const targetLabel = `${PANGU_HUB_NAME} / @${namespace}`
+    const skillName = prepared.manifest.name
+    const publishVersion = prepared.manifest.version || '1.0.0'
+    const meta = buildTaskMeta('publish', {
+      skill: {
+        uid: prepared.manifest.skill_id,
+        name: skillName,
+        version: publishVersion,
+        sourceName: 'SkillHub',
+      } as Skill,
+      sourceName: targetLabel,
+      phase: `正在发布规范化包到 ${targetLabel}`,
+    })
+    const task = createTask({
+      ...meta,
+      kind: 'publish',
+      status: 'running',
+      progress: 40,
+    })
+    set((s) => ({ tasks: [task, ...s.tasks] }))
+
+    try {
+      const result = await window.skillMesh.hub.publish({
+        baseUrl,
+        namespace,
+        visibility,
+        zipPath: prepared.zipPath,
+        confirmWarnings: !!confirmWarnings,
+        sessionDir: prepared.sessionDir,
+      })
+
+      if (!result.ok) {
+        if (result.confirmRequired) {
+          set((s) => ({
+            tasks: s.tasks.map((t) =>
+              t.id === task.id
+                ? {
+                    ...t,
+                    status: 'cancelled',
+                    progress: 100,
+                    error: result.message,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : t,
+            ),
+          }))
+          get().persist()
+          return { ok: false, message: result.message, confirmRequired: true }
+        }
+        const authLost =
+          result.status === 401 ||
+          result.status === 403 ||
+          /未登录|请先登录|unauthorized|login/i.test(result.message || '')
+        if (authLost) {
+          set((s) => ({
+            sources: s.sources.map((src) =>
+              src.id === PANGU_HUB_SOURCE_ID
+                ? { ...src, authStatus: 'lost' as const, status: 'disconnected' as SourceStatus }
+                : src,
+            ),
+          }))
+          get().showToast('盘古 Hub 登录凭证已失效，请重新登录后再发布', 'warning')
+          set({ loginOpen: true })
+        }
+        set((s) => ({
+          tasks: s.tasks.map((t) =>
+            t.id === task.id
+              ? {
+                  ...t,
+                  status: 'failed',
+                  progress: 100,
+                  error: result.message,
+                  updatedAt: new Date().toISOString(),
+                }
+              : t,
+          ),
+        }))
+        if (!authLost) get().showToast(result.message || '发布失败', 'error')
+        get().persist()
+        return { ok: false, message: result.message }
+      }
+
+      const remoteStatus =
+        visibility === 'PRIVATE' ? 'uploaded' : mapRemotePublishStatus(result.result?.status)
+      const item: PublishItem = {
+        id: uid('pub'),
+        skillUid: prepared.manifest.skill_id,
+        name: skillName,
+        version: result.result?.version || publishVersion,
+        sourceName: targetLabel,
+        namespace: result.result?.namespace || namespace,
+        slug: result.result?.slug,
+        remoteSkillId: result.result?.skillId,
+        visibility,
+        status: remoteStatus,
+        createdAt: new Date().toISOString(),
+      }
+
+      // Register as local imported skill for later updates
+      const localSkill: Skill = {
+        uid: `local:imported:${prepared.manifest.skill_id}`,
+        sourceId: 'local',
+        sourceName: '本地导入',
+        skillId: prepared.manifest.skill_id,
+        name: skillName,
+        description: prepared.manifest.description || '',
+        version: item.version,
+        latestVersion: item.version,
+        author: prepared.manifest.author,
+        tags: prepared.manifest.tags || [],
+        category: '开发',
+        installed: true,
+        updateAvailable: false,
+        favorite: false,
+        syncedAgents: [],
+        origin: 'imported',
+        localPath: prepared.packageDir,
+        zipPath: prepared.zipPath,
+        zipHash: prepared.zipHash,
+        contentHash: prepared.contentHash,
+        manifest: prepared.manifest,
+        content: prepared.skillMd,
+      }
+
+      const notifyPhase =
+        visibility === 'PRIVATE'
+          ? '已上传（私人）'
+          : remoteStatus === 'published'
+            ? '已发布'
+            : remoteStatus === 'uploaded'
+              ? '已上传'
+              : '审核中'
+
+      set((s) => ({
+        publishItems: [item, ...s.publishItems],
+        skills: [localSkill, ...s.skills.filter((sk) => sk.uid !== localSkill.uid)],
+        tasks: s.tasks.map((t) =>
+          t.id === task.id
+            ? {
+                ...t,
+                subtitle: notifyPhase,
+                status: 'success',
+                progress: 100,
+                updatedAt: new Date().toISOString(),
+              }
+            : t,
+        ),
+      }))
+      get().pushNotification(`${skillName} ${notifyPhase}`, task.id)
+      get().showToast(
+        visibility === 'PRIVATE'
+          ? `${skillName} 已上传（私人）`
+          : remoteStatus === 'reviewing'
+            ? `${skillName} 审核中`
+            : `${skillName} ${notifyPhase}`,
+        remoteStatus === 'reviewing' ? 'info' : 'success',
       )
       get().persist()
       return { ok: true }
@@ -2332,6 +3826,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setPublishFilter: (f) => set({ publishFilter: f }),
   pushNotification: (msg, taskId, tone = 'info') => {
+    void window.skillMesh?.logs?.append?.({
+      level: tone === 'error' ? 'error' : tone === 'warning' ? 'warn' : 'info',
+      message: `[notify] ${msg}`,
+      meta: taskId ? { taskId } : undefined,
+    })
     set((s) => ({
       notifications: [
         {
@@ -2372,10 +3871,148 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().persist()
   },
   clearStorageCache: () => {
-    set({ storageUsedGb: 0 })
-    get().showToast('已清理缓存与临时日志', 'success')
-    get().persist()
+    void (async () => {
+      try {
+        const purged = await window.skillMesh?.logs?.purge?.()
+        const removed = purged?.removed?.length || 0
+        await get().refreshStorageStats()
+        get().showToast(
+          removed ? `已清理 ${removed} 个过期日志文件` : '已清理缓存（无过期日志）',
+          'success',
+        )
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '清理失败'
+        get().showToast(/No handler registered/i.test(message) ? '请完全重启应用后再试' : message, 'error')
+      }
+    })()
   },
+
+  refreshStorageStats: async () => {
+    const api = window.skillMesh?.app?.getDiskSpace
+    if (!api) {
+      set({
+        storageUsedGb: 0,
+        storageTotalGb: 0,
+        storageFreeGb: 0,
+        storageSkillsUsedGb: 0,
+        storageVolumeLabel: '',
+        storagePath: null,
+      })
+      return
+    }
+    try {
+      const res = await api({ path: get().skillsRootPath })
+      if (!res?.ok) return
+      set({
+        storageUsedGb: res.usedGb ?? 0,
+        storageTotalGb: res.totalGb ?? 0,
+        storageFreeGb: res.freeGb ?? 0,
+        storageSkillsUsedGb: res.skillsUsedGb ?? 0,
+        storageVolumeLabel: res.volumeLabel || '',
+        storagePath: res.path || null,
+      })
+    } catch {
+      // Main process may be stale until full Electron restart
+      set({
+        storageUsedGb: 0,
+        storageTotalGb: 0,
+        storageFreeGb: 0,
+        storageSkillsUsedGb: 0,
+        storageVolumeLabel: '',
+        storagePath: null,
+      })
+    }
+  },
+
+  refreshLogsInfo: async () => {
+    const api = window.skillMesh?.logs?.getInfo
+    if (!api) return
+    try {
+      const res = await api()
+      if (!res?.ok) return
+      set({
+        logsDirDisplay: res.logsDirDisplay || res.logsDir || null,
+        logsTodayFileDisplay: res.todayFileDisplay || res.todayFile || null,
+        logsRetainDays: res.retainDays || 7,
+      })
+    } catch {
+      // ignore until main process restarts with log IPC
+    }
+  },
+
+  openLogsDirectory: async () => {
+    const api = window.skillMesh?.logs?.openDir
+    if (!api) {
+      get().showToast('当前环境不支持打开日志目录', 'warning')
+      return
+    }
+    try {
+      const res = await api()
+      if (!res.ok) get().showToast(res.error || '打开日志目录失败', 'error')
+      else await get().refreshLogsInfo()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '打开日志目录失败'
+      get().showToast(/No handler registered/i.test(message) ? '请完全重启应用后再试' : message, 'error')
+    }
+  },
+
+  refreshSkillsRootPath: async () => {
+    const api = window.skillMesh?.app?.getPaths
+    if (!api) return
+    const res = await api()
+    if (!res?.ok) return
+    const display = res.skillsRootDisplay || res.skillsRoot || DEFAULT_SKILLS_ROOT
+    set({ skillsRootPath: display })
+    get().persist()
+    void get().refreshStorageStats()
+  },
+
+  saveSkillsRootPath: async (pathValue) => {
+    const raw = (pathValue || '').trim()
+    const validated = await get().validateAgentSkillPath(raw)
+    if (!validated.ok) {
+      const message = validated.error || '路径不合法，无法保存'
+      get().showToast(message, 'error')
+      return { ok: false, message }
+    }
+
+    const display = validated.displayPath || validated.path || raw
+    const api = window.skillMesh?.app?.setSkillsRoot
+    if (api) {
+      const result = await api({ path: display })
+      if (!result.ok) {
+        const message = result.error || '保存失败'
+        get().showToast(message, 'error')
+        return { ok: false, message }
+      }
+    }
+
+    set({
+      skillsRootPath: display,
+      restartRequired: computeRestartRequired(get().agentPathOverrides, display),
+    })
+    get().persist()
+
+    if (!computeRestartRequired(get().agentPathOverrides, display)) {
+      get().showToast('仓库路径已恢复为当前生效配置，无需重启', 'success')
+      return { ok: true, choice: 'cancel' }
+    }
+
+    const choice = window.skillMesh?.dialog.restartPrompt
+      ? await window.skillMesh.dialog.restartPrompt({
+          title: '本地仓库路径已修改',
+          message: '新路径已保存，重启后生效。',
+          detail: '已安装 Skill 不会自动迁移；重启后新安装将写入新仓库。',
+        })
+      : window.confirm('本地仓库路径已保存，是否立即重启？')
+        ? 'relaunch'
+        : 'later'
+    if (choice === 'relaunch') {
+      await window.skillMesh?.app?.relaunch()
+    }
+    return { ok: true, choice }
+  },
+
   goDiscoverUpdates: () => {
     set({
       statusFilter: 'update_available',
@@ -2438,17 +4075,39 @@ export function selectFilteredSkills(state: AppState): Skill[] {
   if (state.discoverTab === 'favorites') list = list.filter((s) => s.favorite)
   if (state.sourceFilter !== 'all') list = list.filter((s) => s.sourceId === state.sourceFilter)
   if (state.categoryFilter !== '全部') {
-    list = list.filter((s) => s.category === state.categoryFilter)
+    const chip = state.categoryFilter
+    const aliases: Record<string, string[]> = {
+      开发: ['开发', '编程开发', '编程', 'code', 'dev', 'development'],
+      测试: ['测试', '安全审计', 'test', 'testing', 'qa'],
+      办公: ['办公', '办公效率', '文档处理', 'office', 'docs'],
+      数据: ['数据', '数据分析', 'data', 'analytics'],
+      自动化: ['自动化', 'AI助手', 'automation', 'ai'],
+    }
+    const keys = aliases[chip] || [chip]
+    list = list.filter((s) => {
+      const cat = (s.category || '').toLowerCase()
+      const tags = s.tags.map((t) => t.toLowerCase())
+      return keys.some((k) => {
+        const key = k.toLowerCase()
+        return cat === key || cat.includes(key) || tags.some((t) => t.includes(key))
+      })
+    })
   }
   if (state.statusFilter !== 'all') list = list.filter((s) => skillStatus(s) === state.statusFilter)
   if (state.discoverTab === 'latest' || state.sortBy === 'latest') {
     list.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
   } else if (state.discoverTab === 'hot' || state.sortBy === 'hot') {
-    list.sort((a, b) => (b.downloads || 0) - (a.downloads || 0))
+    list.sort((a, b) => skillHotScore(b) - skillHotScore(a) || (b.installCount ?? b.downloads ?? 0) - (a.installCount ?? a.downloads ?? 0))
   } else if (state.sortBy === 'name') {
     list.sort((a, b) => a.name.localeCompare(b.name, 'zh'))
   } else {
-    list.sort((a, b) => Number(b.favorite) - Number(a.favorite) || (b.downloads || 0) - (a.downloads || 0))
+    // recommended: favor favorites, then skill score (install / favorite / growth)
+    list.sort(
+      (a, b) =>
+        Number(b.favorite) - Number(a.favorite) ||
+        skillHotScore(b) - skillHotScore(a) ||
+        (b.installCount ?? b.downloads ?? 0) - (a.installCount ?? a.downloads ?? 0),
+    )
   }
   return list
 }

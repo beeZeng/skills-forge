@@ -42,11 +42,11 @@ function Item({
       onClick={onNavigate}
       className={({ isActive }) =>
         cn(
-          'app-no-drag group flex items-center rounded-mesh font-semibold tracking-tight transition-colors',
-          collapsed
-            ? 'h-11 w-11 justify-center px-0'
-            : 'gap-3 px-2.5 py-2.5 text-[15px]',
-          isActive ? 'bg-mesh-accentSoft text-mesh-text' : 'text-mesh-muted hover:bg-mesh-card hover:text-mesh-text',
+          'app-no-drag group flex items-center rounded-xl font-medium tracking-tight transition-colors',
+          collapsed ? 'h-10 w-10 justify-center px-0' : 'gap-2.5 px-2.5 py-2 text-[13.5px]',
+          isActive
+            ? 'bg-mesh-accentSoft text-mesh-accent'
+            : 'text-mesh-muted hover:bg-mesh-cardHover hover:text-mesh-text',
         )
       }
       title={label}
@@ -55,14 +55,14 @@ function Item({
         <>
           <Icon
             className={cn(
-              'h-[18px] w-[18px] shrink-0',
+              'h-[17px] w-[17px] shrink-0',
               isActive ? 'text-mesh-accent' : 'text-mesh-dim group-hover:text-mesh-muted',
             )}
-            strokeWidth={2.25}
+            strokeWidth={2.1}
           />
           {!collapsed ? <span className="min-w-0 flex-1 truncate">{label}</span> : null}
           {!collapsed && badge ? (
-            <span className="shrink-0 rounded-full bg-mesh-warning/20 px-1.5 py-0.5 text-[11px] font-bold text-mesh-warning">
+            <span className="shrink-0 rounded-full bg-mesh-warning/15 px-1.5 py-0.5 text-[10px] font-semibold text-mesh-warning">
               {badge}
             </span>
           ) : null}
@@ -72,35 +72,58 @@ function Item({
   )
 }
 
+function GroupLabel({
+  label,
+  open,
+  onToggle,
+}: {
+  label: string
+  open: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className="mt-3 flex w-full items-center justify-between px-2.5 py-1 text-[11px] font-semibold tracking-wide text-mesh-dim"
+      onClick={onToggle}
+    >
+      {label}
+      {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+    </button>
+  )
+}
+
 export function Sidebar() {
   const collapsed = useAppStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
   const used = useAppStore((s) => s.storageUsedGb)
   const total = useAppStore((s) => s.storageTotalGb)
+  const free = useAppStore((s) => s.storageFreeGb)
   const runningCount = useAppStore(selectRunningTaskCount)
   const failedCount = useAppStore(selectFailedTaskCount)
   const taskBadge = runningCount + failedCount
-  const [skillsOpen, setSkillsOpen] = useState(true)
-  const [settingsOpen, setSettingsOpen] = useState(true)
-  const [collapsedSettingsOpen, setCollapsedSettingsOpen] = useState(false)
-  const [settingsFlyoutPos, setSettingsFlyoutPos] = useState<{ top: number; left: number } | null>(null)
-  const settingsBtnRef = useRef<HTMLButtonElement>(null)
-  const pct = Math.min(100, Math.round((used / total) * 100))
+  const [capabilityOpen, setCapabilityOpen] = useState(true)
+  const [runtimeOpen, setRuntimeOpen] = useState(true)
+  const [systemOpen, setSystemOpen] = useState(true)
+  const [collapsedMoreOpen, setCollapsedMoreOpen] = useState(false)
+  const [flyoutPos, setFlyoutPos] = useState<{ top: number; left: number } | null>(null)
+  const moreBtnRef = useRef<HTMLButtonElement>(null)
+  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
 
   useEffect(() => {
-    if (!collapsed) setCollapsedSettingsOpen(false)
+    if (!collapsed) setCollapsedMoreOpen(false)
   }, [collapsed])
 
   useLayoutEffect(() => {
-    if (!collapsedSettingsOpen) {
-      setSettingsFlyoutPos(null)
+    if (!collapsedMoreOpen) {
+      setFlyoutPos(null)
       return
     }
     const update = () => {
-      const el = settingsBtnRef.current
+      const el = moreBtnRef.current
       if (!el) return
       const r = el.getBoundingClientRect()
-      setSettingsFlyoutPos({ top: r.top, left: r.right + 8 })
+      setFlyoutPos({ top: r.top, left: r.right + 8 })
     }
     update()
     window.addEventListener('resize', update)
@@ -109,41 +132,41 @@ export function Sidebar() {
       window.removeEventListener('resize', update)
       window.removeEventListener('scroll', update, true)
     }
-  }, [collapsedSettingsOpen])
+  }, [collapsedMoreOpen])
 
   useEffect(() => {
-    if (!collapsedSettingsOpen) return
+    if (!collapsedMoreOpen) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCollapsedSettingsOpen(false)
+      if (e.key === 'Escape') setCollapsedMoreOpen(false)
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [collapsedSettingsOpen])
+  }, [collapsedMoreOpen])
 
   return (
     <aside
       className={cn(
-        'app-drag relative z-30 flex h-full shrink-0 flex-col border-r border-mesh-border bg-mesh-panel',
-        // Clip label bleed during width animation; settings flyout uses fixed so it won't be clipped.
+        'app-drag relative z-30 flex h-full shrink-0 flex-col border-r border-mesh-border bg-mesh-panel/95 backdrop-blur-xl',
         'overflow-hidden transition-[width] duration-200 ease-out',
         collapsed ? 'w-[72px]' : 'w-[248px]',
       )}
     >
-      {/* Header: expanded = brand+title+toggle; collapsed = brand then toggle (no squeeze) */}
       <div
         className={cn(
-          'app-no-drag shrink-0 border-b border-mesh-border/60',
+          'app-no-drag shrink-0 border-b border-mesh-border/70',
           collapsed ? 'flex flex-col items-center gap-1 px-2 pb-3 pt-3' : 'flex h-14 items-center gap-2.5 px-3',
         )}
       >
-        <BrandMark className={cn('shrink-0 drop-shadow-sm', collapsed ? 'h-9 w-9' : 'h-9 w-9')} />
+        <BrandMark className={cn('shrink-0', collapsed ? 'h-8 w-8' : 'h-8 w-8')} />
         {!collapsed ? (
-          <div className="min-w-0 flex-1 truncate text-base font-bold tracking-tight text-mesh-text">Nexus</div>
+          <div className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-tight text-mesh-text">
+            Nexus
+          </div>
         ) : null}
         <button
           type="button"
           onClick={toggleSidebar}
-          className="rounded-md p-1.5 text-mesh-dim hover:bg-mesh-card hover:text-mesh-text"
+          className="rounded-lg p-1.5 text-mesh-dim hover:bg-mesh-cardHover hover:text-mesh-text"
           aria-label={collapsed ? '展开导航' : '折叠导航'}
         >
           {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
@@ -157,146 +180,104 @@ export function Sidebar() {
             collapsed && 'flex flex-col items-center',
           )}
         >
-          <Item to="/dashboard" icon={LayoutDashboard} label="工作台" collapsed={collapsed} />
+          <Item to="/dashboard" icon={LayoutDashboard} label="控制中心" collapsed={collapsed} />
 
           {!collapsed ? (
-            <button
-              type="button"
-              className="mt-3 flex w-full items-center justify-between px-2.5 py-1 text-[12px] font-bold uppercase tracking-wider text-mesh-dim"
-              onClick={() => setSkillsOpen((v) => !v)}
-            >
-              技能
-              {skillsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            </button>
+            <GroupLabel label="能力管理" open={capabilityOpen} onToggle={() => setCapabilityOpen((v) => !v)} />
           ) : (
             <div className="my-2 w-8 border-t border-mesh-border" />
           )}
-          {(collapsed || skillsOpen) && (
+          {(collapsed || capabilityOpen) && (
             <div className={cn('space-y-0.5', collapsed && 'flex flex-col items-center')}>
-              <Item to="/skills/mine" icon={Boxes} label="我的" collapsed={collapsed} />
-              <Item to="/skills/discover" icon={Search} label="发现" collapsed={collapsed} />
+              <Item to="/skills/discover" icon={Search} label="发现技能" collapsed={collapsed} />
+              <Item to="/skills/mine" icon={Boxes} label="我的技能" collapsed={collapsed} />
+              <Item to="/publish" icon={CloudUpload} label="发布技能" collapsed={collapsed} />
             </div>
           )}
 
-          <div className={cn('pt-1.5', collapsed && 'flex justify-center')}>
-            <Item to="/publish" icon={CloudUpload} label="发布" collapsed={collapsed} />
-          </div>
-
-          <div className={cn('my-3 border-t border-mesh-border', collapsed ? 'w-8' : 'w-full')} />
+          {!collapsed ? (
+            <GroupLabel label="运行环境" open={runtimeOpen} onToggle={() => setRuntimeOpen((v) => !v)} />
+          ) : (
+            <div className="my-2 w-8 border-t border-mesh-border" />
+          )}
+          {(collapsed || runtimeOpen) && (
+            <div className={cn('space-y-0.5', collapsed && 'flex flex-col items-center')}>
+              <Item to="/settings/sources" icon={Database} label="技能来源" collapsed={collapsed} />
+              <Item to="/settings/agents" icon={Bot} label="智能体管理" collapsed={collapsed} />
+            </div>
+          )}
 
           {!collapsed ? (
             <>
-              <button
-                type="button"
-                className="flex w-full items-center justify-between px-2.5 py-1 text-[12px] font-bold uppercase tracking-wider text-mesh-dim"
-                onClick={() => setSettingsOpen((v) => !v)}
-              >
-                设置
-                {settingsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-              </button>
-              {settingsOpen ? (
+              <GroupLabel label="系统" open={systemOpen} onToggle={() => setSystemOpen((v) => !v)} />
+              {systemOpen ? (
                 <div className="space-y-0.5">
-                  <Item to="/settings/sources" icon={Database} label="技能源配置" />
-                  <Item to="/settings/agents" icon={Bot} label="智能体配置" />
+                  <Item
+                    to="/tasks"
+                    icon={ClipboardList}
+                    label={failedCount ? `任务中心 · 失败 ${failedCount}` : '任务中心'}
+                    badge={taskBadge || undefined}
+                  />
                   <Item to="/settings/storage" icon={HardDrive} label="存储管理" />
-                  <Item to="/settings/advanced" icon={SlidersHorizontal} label="高级设置" />
+                  <Item to="/settings/advanced" icon={SlidersHorizontal} label="设置中心" />
                   <Item to="/settings/guide" icon={BookOpen} label="操作说明" />
                 </div>
               ) : null}
             </>
           ) : (
-            <div className="flex justify-center">
+            <div className="flex flex-col items-center gap-0.5">
+              <Item
+                to="/tasks"
+                icon={ClipboardList}
+                label="任务中心"
+                badge={taskBadge || undefined}
+                collapsed
+              />
               <button
-                ref={settingsBtnRef}
+                ref={moreBtnRef}
                 type="button"
                 className={cn(
-                  'app-no-drag flex h-11 w-11 items-center justify-center rounded-mesh text-mesh-muted hover:bg-mesh-card hover:text-mesh-text',
-                  collapsedSettingsOpen && 'bg-mesh-accentSoft text-mesh-accent',
+                  'app-no-drag flex h-10 w-10 items-center justify-center rounded-xl text-mesh-muted hover:bg-mesh-cardHover hover:text-mesh-text',
+                  collapsedMoreOpen && 'bg-mesh-accentSoft text-mesh-accent',
                 )}
-                onClick={() => setCollapsedSettingsOpen((v) => !v)}
-                title="设置"
-                aria-expanded={collapsedSettingsOpen}
+                onClick={() => setCollapsedMoreOpen((v) => !v)}
+                title="更多设置"
               >
-                <Settings2 className="h-[18px] w-[18px]" strokeWidth={2.25} />
+                <Settings2 className="h-[17px] w-[17px]" strokeWidth={2.1} />
               </button>
-              {collapsedSettingsOpen && settingsFlyoutPos ? (
+              {collapsedMoreOpen && flyoutPos ? (
                 <>
                   <button
                     type="button"
                     className="fixed inset-0 z-[190] cursor-default bg-transparent"
-                    aria-label="关闭设置菜单"
-                    onClick={() => setCollapsedSettingsOpen(false)}
+                    aria-label="关闭菜单"
+                    onClick={() => setCollapsedMoreOpen(false)}
                   />
                   <div
-                    className="fixed z-[200] w-48 rounded-mesh border border-mesh-border bg-mesh-card p-1 shadow-mesh"
-                    style={{ top: settingsFlyoutPos.top, left: settingsFlyoutPos.left }}
+                    className="fixed z-[200] w-48 rounded-xl border border-mesh-border bg-mesh-card p-1 shadow-mesh"
+                    style={{ top: flyoutPos.top, left: flyoutPos.left }}
                   >
-                    <Item
-                      to="/settings/sources"
-                      icon={Database}
-                      label="技能源配置"
-                      onNavigate={() => setCollapsedSettingsOpen(false)}
-                    />
-                    <Item
-                      to="/settings/agents"
-                      icon={Bot}
-                      label="智能体配置"
-                      onNavigate={() => setCollapsedSettingsOpen(false)}
-                    />
-                    <Item
-                      to="/settings/storage"
-                      icon={HardDrive}
-                      label="存储管理"
-                      onNavigate={() => setCollapsedSettingsOpen(false)}
-                    />
-                    <Item
-                      to="/settings/advanced"
-                      icon={SlidersHorizontal}
-                      label="高级设置"
-                      onNavigate={() => setCollapsedSettingsOpen(false)}
-                    />
-                    <Item
-                      to="/settings/guide"
-                      icon={BookOpen}
-                      label="操作说明"
-                      onNavigate={() => setCollapsedSettingsOpen(false)}
-                    />
+                    <Item to="/settings/storage" icon={HardDrive} label="存储管理" onNavigate={() => setCollapsedMoreOpen(false)} />
+                    <Item to="/settings/advanced" icon={SlidersHorizontal} label="设置中心" onNavigate={() => setCollapsedMoreOpen(false)} />
+                    <Item to="/settings/guide" icon={BookOpen} label="操作说明" onNavigate={() => setCollapsedMoreOpen(false)} />
                   </div>
                 </>
               ) : null}
             </div>
           )}
         </div>
-
-        <div
-          className={cn(
-            'mt-auto shrink-0 border-t border-mesh-border pt-2',
-            collapsed && 'flex justify-center',
-          )}
-        >
-          <Item
-            to="/tasks"
-            icon={ClipboardList}
-            label={failedCount ? `任务日志 · 失败 ${failedCount}` : '任务日志'}
-            badge={taskBadge || undefined}
-            collapsed={collapsed}
-          />
-        </div>
       </nav>
 
       {!collapsed ? (
-        <div className="app-no-drag shrink-0 space-y-3 border-t border-mesh-border p-3 text-xs">
-          <div>
-            <div className="mb-1.5 flex items-center justify-between font-semibold text-mesh-muted">
-              <span>存储空间</span>
-              <span>
-                {used}GB / {total}GB
-              </span>
-            </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-mesh-card">
-              <div className="h-full rounded-full bg-mesh-accent" style={{ width: `${pct}%` }} />
-            </div>
+        <div className="app-no-drag shrink-0 space-y-2 border-t border-mesh-border p-3 text-xs">
+          <div className="mb-1.5 flex items-center justify-between font-medium text-mesh-muted">
+            <span>本地存储</span>
+            <span>{total > 0 ? `${used} / ${total} GB` : '—'}</span>
           </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-mesh-bg">
+            <div className="h-full rounded-full bg-mesh-accent" style={{ width: `${pct}%` }} />
+          </div>
+          {total > 0 ? <div className="text-[10px] text-mesh-dim">剩余 {free} GB</div> : null}
         </div>
       ) : null}
     </aside>

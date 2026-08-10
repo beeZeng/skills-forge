@@ -74,7 +74,7 @@ function createWindow() {
   const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173'
   if (isDev) {
     console.log('[Nexus] loading', devUrl)
-    const target = `${devUrl.replace(/\/$/, '')}/#/skills/discover`
+    const target = `${devUrl.replace(/\/$/, '')}/#/dashboard`
     void mainWindow
       .loadURL(target)
       .then(() => {
@@ -98,7 +98,7 @@ function createWindow() {
 
   // Use loadFile (file://) — custom app:// often fails to serve Vite ES modules (black screen)
   void mainWindow
-    .loadFile(indexPath, { hash: '/skills/discover' })
+    .loadFile(indexPath, { hash: '/dashboard' })
     .then(() => {
       mainWindow?.show()
       mainWindow?.focus()
@@ -131,7 +131,23 @@ app.whenReady().then(() => {
 
   const dataRoot = path.join(app.getPath('userData'), 'skillmesh-data')
   fs.mkdirSync(dataRoot, { recursive: true })
-  registerIpc({ dataRoot, homeDir: os.homedir() })
+  try {
+    const { initAppLog } = require('./logging/app-log.cjs')
+    initAppLog(dataRoot)
+  } catch (error) {
+    console.warn('[Nexus] app log init skipped', error)
+  }
+  let skillsRootOverride = null
+  try {
+    const cfgPath = path.join(dataRoot, 'skills-root.json')
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+      if (cfg && typeof cfg.path === 'string' && cfg.path.trim()) skillsRootOverride = cfg.path.trim()
+    }
+  } catch (error) {
+    console.warn('[Nexus] skills-root config skipped', error)
+  }
+  registerIpc({ dataRoot, homeDir: os.homedir(), skillsRoot: skillsRootOverride })
   createWindow()
 })
 
@@ -153,8 +169,21 @@ ipcMain.handle('dialog:openSkillPackage', async () => {
     title: '导入本地 Skill',
     properties: ['openFile', 'openDirectory'],
     filters: [
-      { name: 'Skill Packages', extensions: ['zip', 'skillpack', 'tar', 'gz', 'tgz'] },
+      { name: 'Skill Packages', extensions: ['zip', 'skillpack', 'md', 'tar', 'gz', 'tgz'] },
+      { name: 'Markdown', extensions: ['md'] },
       { name: 'All Files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || !result.filePaths[0]) return null
+  return result.filePaths[0]
+})
+
+ipcMain.handle('dialog:openPublishZip', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '上传 Skill 压缩包',
+    properties: ['openFile'],
+    filters: [
+      { name: 'ZIP', extensions: ['zip'] },
     ],
   })
   if (result.canceled || !result.filePaths[0]) return null
@@ -165,6 +194,22 @@ ipcMain.handle('shell:openPath', async (_event, targetPath) => {
   if (typeof targetPath !== 'string' || !targetPath) return { ok: false }
   const err = await shell.openPath(targetPath)
   return { ok: !err, error: err || undefined }
+})
+
+ipcMain.handle('shell:openExternal', async (_event, targetUrl) => {
+  if (typeof targetUrl !== 'string' || !targetUrl.trim()) {
+    return { ok: false, error: '链接为空' }
+  }
+  const url = targetUrl.trim()
+  if (!/^https?:\/\//i.test(url)) {
+    return { ok: false, error: '仅支持 http(s) 链接' }
+  }
+  try {
+    await shell.openExternal(url)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : '打开失败' }
+  }
 })
 
 ipcMain.handle('app:focus', async () => {

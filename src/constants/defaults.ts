@@ -52,6 +52,7 @@ export const DEFAULT_AGENTS: AgentInstallation[] = [
     installed: false,
     skillPath: '~/.cursor/skills',
     defaultSkillPath: '~/.cursor/skills',
+    homepageUrl: 'https://cursor.com',
   },
   {
     id: 'claude-code',
@@ -60,6 +61,7 @@ export const DEFAULT_AGENTS: AgentInstallation[] = [
     installed: false,
     skillPath: '~/.claude/skills',
     defaultSkillPath: '~/.claude/skills',
+    homepageUrl: 'https://docs.anthropic.com/en/docs/claude-code',
   },
   {
     id: 'piagent',
@@ -68,6 +70,7 @@ export const DEFAULT_AGENTS: AgentInstallation[] = [
     installed: false,
     skillPath: '~/.pi/skills',
     defaultSkillPath: '~/.pi/skills',
+    homepageUrl: 'https://pi.dev',
   },
   {
     id: 'codex',
@@ -76,6 +79,7 @@ export const DEFAULT_AGENTS: AgentInstallation[] = [
     installed: false,
     skillPath: '~/.codex/skills',
     defaultSkillPath: '~/.codex/skills',
+    homepageUrl: 'https://openai.com/codex',
   },
   {
     id: 'qoder',
@@ -84,6 +88,7 @@ export const DEFAULT_AGENTS: AgentInstallation[] = [
     installed: false,
     skillPath: '~/.qoder/skills',
     defaultSkillPath: '~/.qoder/skills',
+    homepageUrl: 'https://qoder.com',
   },
   {
     id: 'trae',
@@ -92,6 +97,7 @@ export const DEFAULT_AGENTS: AgentInstallation[] = [
     installed: false,
     skillPath: '~/.trae/skills',
     defaultSkillPath: '~/.trae/skills',
+    homepageUrl: 'https://www.trae.ai',
   },
   {
     id: 'opencode',
@@ -100,10 +106,11 @@ export const DEFAULT_AGENTS: AgentInstallation[] = [
     installed: false,
     skillPath: '~/.opencode/skills',
     defaultSkillPath: '~/.opencode/skills',
+    homepageUrl: 'https://opencode.ai',
   },
 ]
 
-export const CATEGORY_CHIPS = ['全部', '数据分析', '文档处理', '编程开发', '安全审计', '办公效率', 'AI助手'] as const
+export const CATEGORY_CHIPS = ['全部', '开发', '测试', '办公', '数据', '自动化'] as const
 
 /** Legacy seed Skill UIDs — stripped on hydrate so old persisted mock installs disappear. */
 export const LEGACY_MOCK_SKILL_UIDS = new Set([

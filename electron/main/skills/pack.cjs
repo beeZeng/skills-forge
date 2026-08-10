@@ -1,32 +1,22 @@
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
-const { execFile } = require('child_process')
-const { promisify } = require('util')
-const { expandPath, ensureSkillPackage } = require('./sync.cjs')
-
-const execFileAsync = promisify(execFile)
-
-function slugifyName(name) {
-  return (
-    String(name || 'skill')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 64) || 'skill'
-  )
-}
+const { expandPath, ensureSkillPackage, toDisplayPath } = require('./sync.cjs')
+const { zipDirectory } = require('./zip-fs.cjs')
+const { normalizeSkillPackage } = require('./normalize-package.cjs')
+const { slugifySkillName } = require('./manifest.cjs')
 
 function ensureFrontmatter(skillDir, skillMeta) {
-  const skillMd = path.join(skillDir, 'SKILL.md')
+  const skillMd = path.join(skillDir, 'skill.md')
+  const skillMdAlt = path.join(skillDir, 'SKILL.md')
+  const target = fs.existsSync(skillMd) ? skillMd : skillMdAlt
   const name = skillMeta.name || skillMeta.skillId || 'skill'
   const description = skillMeta.description || ''
   const version = skillMeta.version || '1.0.0'
   const bodyFallback = `# ${name}\n\n${description}\n`
   let body = bodyFallback
-  if (fs.existsSync(skillMd)) {
-    const raw = fs.readFileSync(skillMd, 'utf8')
+  if (fs.existsSync(target)) {
+    const raw = fs.readFileSync(target, 'utf8')
     if (raw.startsWith('---')) {
       const end = raw.indexOf('\n---', 3)
       body = end >= 0 ? raw.slice(end + 4).replace(/^\n/, '') : bodyFallback
@@ -35,42 +25,130 @@ function ensureFrontmatter(skillDir, skillMeta) {
     }
   }
   const content = `---\nname: ${name}\ndescription: ${String(description).replace(/\n/g, ' ')}\nversion: ${version}\n---\n\n${body.trim()}\n`
-  fs.writeFileSync(skillMd, content, 'utf8')
-  return { name, description, version, slugHint: slugifyName(skillMeta.skillId || name) }
+  fs.writeFileSync(path.join(skillDir, 'skill.md'), content, 'utf8')
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content, 'utf8')
+  return { name, description, version, slugHint: slugifySkillName(skillMeta.skillId || name) }
 }
 
-async function zipDirectory(dir, outZip) {
-  if (fs.existsSync(outZip)) fs.rmSync(outZip, { force: true })
-  if (process.platform === 'win32') {
-    const ps = `Compress-Archive -Path (Join-Path -Path '${dir.replace(/'/g, "''")}' -ChildPath '*') -DestinationPath '${outZip.replace(/'/g, "''")}' -Force`
-    await execFileAsync('powershell.exe', ['-NoProfile', '-Command', ps])
-  } else {
-    await execFileAsync('zip', ['-r', '-q', outZip, '.'], { cwd: dir })
+function resolveExistingDir(candidates, homeDir) {
+  for (const raw of candidates) {
+    if (!raw || typeof raw !== 'string') continue
+    let dir = expandPath(raw, homeDir)
+    if (!dir || !fs.existsSync(dir)) continue
+    if (fs.statSync(dir).isFile()) {
+      if (/\.md$/i.test(dir)) {
+        // Single markdown file — use parent only if package files already sit beside it;
+        // otherwise treat as missing so we can rebuild from content.
+        const siblingSkill = ['skill.md', 'SKILL.md', 'manifest.json'].some((name) =>
+          fs.existsSync(path.join(path.dirname(dir), name)),
+        )
+        if (siblingSkill) dir = path.dirname(dir)
+        else continue
+      } else if (/\.zip$/i.test(dir)) {
+        continue
+      } else {
+        dir = path.dirname(dir)
+      }
+    }
+    if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) return dir
   }
-  if (!fs.existsSync(outZip)) throw new Error('打包 zip 失败')
+  return ''
 }
 
 /**
- * Ensure SkillHub-compatible SKILL.md frontmatter, then zip skill directory.
+ * Ensure standard package layout + SkillHub-compatible frontmatter, then zip with JSZip.
+ * Recovers when localPath was lost but content / agentInstallPath / zip still exists.
  */
 async function packSkillZip({ homeDir, skill, version } = {}) {
   try {
     if (!skill) return { ok: false, error: '缺少 Skill' }
     const root = homeDir || os.homedir()
-    let dir = expandPath(skill.localPath, root)
-    if (!dir || !fs.existsSync(dir)) {
-      return { ok: false, error: 'Skill 本地目录不存在，请先在「我的」中打开确认' }
-    }
-    if (fs.statSync(dir).isFile()) dir = path.dirname(dir)
+    const publishVersion = version || skill.version || '1.0.0'
 
-    const meta = { ...skill, version: version || skill.version || '1.0.0' }
-    ensureSkillPackage(dir, meta)
+    // Fast path: already have a usable zip on disk
+    const existingZip = skill.zipPath ? expandPath(skill.zipPath, root) : ''
+    if (
+      existingZip &&
+      fs.existsSync(existingZip) &&
+      fs.statSync(existingZip).isFile() &&
+      /\.zip$/i.test(existingZip) &&
+      // Prefer rebuilding when we still have a package dir (keeps version/metadata fresh)
+      !resolveExistingDir([skill.localPath, skill.agentInstallPath], root)
+    ) {
+      return {
+        ok: true,
+        zipPath: existingZip,
+        version: publishVersion,
+        name: skill.name,
+        tmpDir: null,
+        reusedZip: true,
+      }
+    }
+
+    let dir = resolveExistingDir([skill.localPath, skill.agentInstallPath], root)
+    let recoveredPath = ''
+
+    if (!dir) {
+      const content = typeof skill.content === 'string' ? skill.content.trim() : ''
+      if (!content) {
+        return {
+          ok: false,
+          error: 'Skill 本地目录不存在，且没有可恢复的内容。请回到「我的」重新打开或再创建一次。',
+        }
+      }
+      const folderHint =
+        expandPath(skill.localPath, root) ||
+        expandPath(skill.agentInstallPath, root) ||
+        path.join(root, 'new_skills', String(skill.skillId || skill.name || 'skill').replace(/[<>:"|?*]/g, '_'))
+      dir = folderHint
+      fs.mkdirSync(dir, { recursive: true })
+      recoveredPath = toDisplayPath(dir, root)
+    }
+
+    const meta = {
+      ...skill,
+      version: publishVersion,
+      origin: skill.origin || 'created',
+      author: skill.author || skill.sourceName || 'unknown',
+      sourceId: skill.sourceId || 'local',
+    }
+    if (!meta.content) {
+      for (const name of ['skill.md', 'SKILL.md']) {
+        const skillMd = path.join(dir, name)
+        if (fs.existsSync(skillMd)) {
+          meta.content = fs.readFileSync(skillMd, 'utf8')
+          break
+        }
+      }
+    }
+    if (!meta.content || !String(meta.content).trim()) {
+      return { ok: false, error: 'Skill 内容为空，无法打包发布' }
+    }
+
+    const written = ensureSkillPackage(dir, meta)
+    if (!written.ok) return { ok: false, error: written.error || '打包前写入失败' }
     const fm = ensureFrontmatter(dir, meta)
+
+    normalizeSkillPackage(
+      dir,
+      { ...meta, content: fs.readFileSync(path.join(dir, 'skill.md'), 'utf8') },
+      { writeSkillJson: true },
+    )
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-publish-'))
     const zipPath = path.join(tmpDir, `${fm.slugHint || 'skill'}-${fm.version}.zip`)
-    await zipDirectory(dir, zipPath)
-    return { ok: true, zipPath, version: fm.version, name: fm.name, tmpDir }
+    await zipDirectory(dir, zipPath, {
+      rootName: fm.slugHint || 'skill',
+      exclude: (rel) => /(^|\/)skill\.json$/i.test(rel),
+    })
+    return {
+      ok: true,
+      zipPath,
+      version: fm.version,
+      name: fm.name,
+      tmpDir,
+      localPath: recoveredPath || toDisplayPath(dir, root),
+    }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : '打包失败' }
   }
@@ -86,5 +164,5 @@ module.exports = {
   packSkillZip,
   cleanupPack,
   ensureFrontmatter,
-  slugifyName,
+  slugifyName: slugifySkillName,
 }

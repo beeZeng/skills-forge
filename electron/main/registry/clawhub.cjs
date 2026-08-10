@@ -94,6 +94,11 @@ function mapSkill(item, { sourceId, sourceName }) {
     category: item.native?.skill?.categories?.[0] || tags[0] || '未分类',
     license: item.latestVersion?.license || undefined,
     updatedAt: formatDay(item.updatedAt || item.metrics?.updatedAt),
+    homepageUrl: `https://clawhub.ai/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}`,
+    packageSource: {
+      kind: 'clawhub',
+      clawhubSlug: slug,
+    },
     installed: false,
     updateAvailable: false,
     favorite: false,

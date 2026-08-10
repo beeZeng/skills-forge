@@ -74,7 +74,7 @@ function createWindow() {
   const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173'
   if (isDev) {
     console.log('[Nexus] loading', devUrl)
-    const target = `${devUrl.replace(/\/$/, '')}/#/skills/discover`
+    const target = `${devUrl.replace(/\/$/, '')}/#/dashboard`
     void mainWindow
       .loadURL(target)
       .then(() => {
@@ -98,7 +98,7 @@ function createWindow() {
 
   // Use loadFile (file://) — custom app:// often fails to serve Vite ES modules (black screen)
   void mainWindow
-    .loadFile(indexPath, { hash: '/skills/discover' })
+    .loadFile(indexPath, { hash: '/dashboard' })
     .then(() => {
       mainWindow?.show()
       mainWindow?.focus()

@@ -1,6 +1,9 @@
-import { FilePlus2, FolderOpen, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { FilePlus2, FolderOpen, Plus, RefreshCw, Search, Trash2, Upload } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
+import { PathReveal } from '@/components/common/PathReveal'
+import { StatusBadge } from '@/components/common/StatusBadge'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { selectMineSkills, useAppStore } from '@/stores/app-store'
 import { cn } from '@/lib/utils'
 import type { MineTab } from '@/types'
@@ -24,11 +27,26 @@ export function MinePage() {
   const setNewSkillsFolder = useAppStore((s) => s.setNewSkillsFolder)
   const createSkill = useAppStore((s) => s.createSkill)
   const importLocalSkill = useAppStore((s) => s.importLocalSkill)
+  const installedSearchQuery = useAppStore((s) => s.installedSearchQuery)
+  const setInstalledSearchQuery = useAppStore((s) => s.setInstalledSearchQuery)
 
   const [entryOpen, setEntryOpen] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
   const [name, setName] = useState('')
   const [content, setContent] = useState('')
+
+  const stats = useMemo(() => {
+    const installed = skills.length
+    const updatable = skills.filter((s) => s.updateAvailable).length
+    const abnormal = skills.filter(
+      (s) =>
+        s.installed &&
+        !s.updateAvailable &&
+        ((s.origin !== 'created' && s.origin !== 'imported' && !s.localPath && !s.agentInstallPath) ||
+          (s.syncedAgents.length > 0 && !s.agentInstallPath)),
+    ).length
+    return { installed, updatable, abnormal }
+  }, [skills])
 
   const defaultMd = useMemo(
     () => `# 未命名 Skill\n\n## 简介\n\n描述这个 Skill 的用途。\n\n## 使用方式\n\n1. 步骤一\n2. 步骤二\n`,
@@ -51,28 +69,50 @@ export function MinePage() {
   }
 
   return (
-    <div className="mx-auto max-w-[1200px] space-y-4">
+    <div className="space-y-4">
       {!editorOpen ? (
         <>
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h1 className="text-xl font-semibold">我的</h1>
-              <p className="mt-1 text-sm text-mesh-dim">本地新建、本地导入，以及发现中已安装的 Skill</p>
+          <PageHeader
+            description="管理本地 Agent 能力"
+            actions={
+              <>
+                <div className="flex w-full max-w-xs items-center gap-2 rounded-xl border border-mesh-border bg-mesh-panel px-3 py-2 sm:w-64">
+                  <Search className="h-4 w-4 shrink-0 text-mesh-dim" />
+                  <input
+                    value={installedSearchQuery}
+                    onChange={(e) => setInstalledSearchQuery(e.target.value)}
+                    placeholder="搜索已安装技能"
+                    className="w-full bg-transparent text-sm outline-none placeholder:text-mesh-dim"
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-mesh-accent px-3 py-2 text-sm text-white hover:bg-mesh-accent/90"
+                  onClick={() => setEntryOpen(true)}
+                >
+                  <Plus className="h-4 w-4" /> 新建
+                </button>
+              </>
+            }
+          />
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="ws-card px-4 py-3">
+              <div className="text-xs text-mesh-dim">已安装</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums text-mesh-text">{stats.installed}</div>
             </div>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 rounded-mesh bg-mesh-accent px-3 py-2 text-sm text-white hover:bg-mesh-accent/90"
-              onClick={() => setEntryOpen(true)}
-            >
-              <Plus className="h-4 w-4" /> 新建
-            </button>
+            <div className="ws-card px-4 py-3">
+              <div className="text-xs text-mesh-dim">可更新</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums text-mesh-warning">{stats.updatable}</div>
+            </div>
+            <div className="ws-card px-4 py-3">
+              <div className="text-xs text-mesh-dim">异常</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums text-mesh-danger">{stats.abnormal}</div>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 rounded-mesh border border-mesh-border bg-mesh-card p-3">
-            <span className="text-xs text-mesh-dim">新建保存目录</span>
-            <code className="min-w-0 flex-1 truncate rounded-md bg-mesh-panel px-2 py-1.5 font-mono text-xs text-mesh-muted">
-              {folder}
-            </code>
+            <PathReveal label="本地技能目录" path={folder} className="min-w-0 flex-1" />
             <button
               type="button"
               className="inline-flex items-center gap-1 rounded-md border border-mesh-border px-2.5 py-1.5 text-xs hover:bg-mesh-panel"
@@ -112,28 +152,34 @@ export function MinePage() {
               return (
                 <div
                   key={skill.uid}
-                  className="flex cursor-pointer items-start gap-4 rounded-mesh border border-mesh-border bg-mesh-card p-4 hover:border-mesh-borderBright hover:bg-mesh-cardHover"
+                  className="ws-card flex cursor-pointer items-start gap-4 p-4"
                   onClick={() => openSkill(skill.uid)}
                 >
-                  <div className="flex h-11 w-11 items-center justify-center rounded-mesh bg-mesh-accentSoft font-semibold text-mesh-accent">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-mesh-accentSoft font-semibold text-mesh-accent">
                     {skill.name.slice(0, 1)}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className="font-medium">{skill.name}</h3>
                       <span className="font-mono text-xs text-mesh-dim">v{skill.version}</span>
-                      <span className="rounded-md bg-mesh-panel px-1.5 py-0.5 text-[11px] text-mesh-muted">
-                        {skill.origin === 'created' ? '新建' : skill.origin === 'imported' ? '本地导入' : '来自源'}
-                      </span>
+                      <StatusBadge
+                        label={
+                          skill.origin === 'created' ? '新建' : skill.origin === 'imported' ? '本地导入' : '来自源'
+                        }
+                        tone="neutral"
+                      />
                       <span className="text-xs text-mesh-dim">
                         {skill.sourceName}
                         {skill.namespace ? ` · ${skill.namespace}/${skill.skillId}` : ''}
                       </span>
                       {!isLocal ? (
-                        <span className={cn('text-xs', skill.updateAvailable ? 'text-mesh-warning' : 'text-mesh-success')}>
-                          {skill.updateAvailable ? `可更新 → v${skill.latestVersion}` : '已是最新'}
-                        </span>
-                      ) : null}
+                        <StatusBadge
+                          label={skill.updateAvailable ? '可更新' : '已安装'}
+                          tone={skill.updateAvailable ? 'warning' : 'success'}
+                        />
+                      ) : (
+                        <StatusBadge label="正常" tone="success" />
+                      )}
                     </div>
                     <p className="mt-1 line-clamp-1 text-sm text-mesh-muted">{skill.description}</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -209,7 +255,9 @@ export function MinePage() {
           <div className="flex items-center justify-between gap-3 border-b border-mesh-border px-4 py-3">
             <div>
               <h1 className="text-lg font-semibold">创建文件 · Markdown 编辑</h1>
-              <p className="text-xs text-mesh-dim">将保存到 {folder}</p>
+              <p className="text-xs text-mesh-dim">
+                将保存到 {folder}（随便写几行即可，保存时会自动补全 frontmatter）
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -226,7 +274,12 @@ export function MinePage() {
                 onClick={() => {
                   createSkill({
                     name: name.trim(),
-                    description: content.split('\n').find((l) => l.trim() && !l.startsWith('#')) || '用户新建的 Skill',
+                    description:
+                      content
+                        .split(/\r?\n/)
+                        .map((l) => l.trim())
+                        .find((l) => l && !l.startsWith('#') && l !== '---' && !/^description:/i.test(l)) ||
+                      '用户新建的 Skill',
                     content,
                   })
                   setEditorOpen(false)
@@ -282,7 +335,7 @@ export function MinePage() {
                 <Upload className="mt-0.5 h-5 w-5 text-mesh-accent" />
                 <span>
                   <span className="block text-sm font-medium">本地导入</span>
-                  <span className="mt-1 block text-xs text-mesh-dim">选择本地 Skill 包或目录</span>
+                  <span className="mt-1 block text-xs text-mesh-dim">选择本地 Skill 包（zip / 目录 / .md）</span>
                 </span>
               </button>
             </div>

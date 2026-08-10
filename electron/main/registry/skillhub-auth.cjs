@@ -6,6 +6,8 @@
 const { session } = require('electron')
 
 const PARTITION = 'persist:panguhub-auth'
+/** Keep auth cookies across app restarts for the same window as the UI session. */
+const SESSION_TTL_MS = 48 * 60 * 60 * 1000
 
 function normalizeBaseUrl(input) {
   if (!input || typeof input !== 'string') return ''
@@ -45,6 +47,58 @@ async function getCookieValue(baseUrl, name) {
   return cookies.find((c) => c.name === name)?.value
 }
 
+/**
+ * Spring often issues SESSION as a browser session cookie (no Expires).
+ * Electron drops those on quit — rewrite with an absolute expiry so login
+ * survives restarts until the client 48h window ends.
+ */
+async function persistAuthCookies(baseUrl, ttlMs = SESSION_TTL_MS) {
+  const base = normalizeBaseUrl(baseUrl)
+  if (!base) return
+  const ses = getSession()
+  const cookies = await ses.cookies.get({ url: base })
+  const expirationDate = Math.floor((Date.now() + ttlMs) / 1000)
+  for (const cookie of cookies) {
+    const basePayload = {
+      url: base,
+      name: cookie.name,
+      value: cookie.value,
+      path: cookie.path || '/',
+      secure: !!cookie.secure,
+      httpOnly: !!cookie.httpOnly,
+      expirationDate,
+    }
+    if (cookie.sameSite && cookie.sameSite !== 'unspecified') {
+      basePayload.sameSite = cookie.sameSite
+    }
+    try {
+      // Host-only write via url (most reliable across restarts).
+      await ses.cookies.set(basePayload)
+    } catch {
+      try {
+        if (cookie.domain) {
+          await ses.cookies.set({ ...basePayload, domain: cookie.domain })
+        }
+      } catch {
+        // Best-effort — skip cookies Electron rejects.
+      }
+    }
+  }
+  try {
+    await ses.cookies.flushStore()
+  } catch {
+    // ignore
+  }
+}
+
+async function clearAuthCookies() {
+  try {
+    await getSession().clearStorageData({ storages: ['cookies'] })
+  } catch {
+    // ignore
+  }
+}
+
 async function ensureCsrf(baseUrl) {
   // Spring CookieCsrfTokenRepository issues XSRF-TOKEN on first touch
   await getSession().fetch(`${baseUrl}/api/v1/auth/methods`, {
@@ -52,6 +106,31 @@ async function ensureCsrf(baseUrl) {
     headers: { Accept: 'application/json' },
   })
   return getCookieValue(baseUrl, 'XSRF-TOKEN')
+}
+
+function loginFailureMessage(res, body, text) {
+  const fromBody = body?.msg || body?.message
+  if (fromBody) return String(fromBody)
+  const status = res?.status
+  const raw = String(text || '')
+  const isTunnelDown =
+    status === 530 ||
+    /error[\s-]?1033|cloudflare tunnel error|argo tunnel|trycloudflare/i.test(raw)
+  if (isTunnelDown) {
+    return [
+      '无法连接 SkillHub：Cloudflare Tunnel 未在线（HTTP 530 / 1033）。',
+      'DNS/ping 通不代表隧道可用——请在跑 SkillHub 的机器上确认 cloudflared 正在运行，',
+      '并用浏览器打开同一地址验证；若是临时 trycloudflare 链接，重启后地址会变，需更新登录框中的 Hub 地址。',
+    ].join('')
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return `SkillHub 暂时不可用（HTTP ${status}），请确认服务已启动后重试`
+  }
+  if (status === 401 || status === 403) {
+    return '用户名或密码错误，或 CSRF 校验失败'
+  }
+  if (status) return `登录失败 HTTP ${status}`
+  return '登录失败'
 }
 
 async function sessionFetch(url, { method = 'GET', headers = {}, body, timeoutMs = 12000 } = {}) {
@@ -100,8 +179,10 @@ async function login({ baseUrl, username, password } = {}) {
   if (!username || !password) return { ok: false, message: '请输入用户名和密码' }
 
   try {
+    // Drop stale SESSION/XSRF from a previous half-dead session so re-login is clean.
+    await clearAuthCookies()
     const csrf = await ensureCsrf(base)
-    const { res, body } = await sessionFetch(`${base}/api/v1/auth/local/login`, {
+    const { res, body, text } = await sessionFetch(`${base}/api/v1/auth/local/login`, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -112,15 +193,33 @@ async function login({ baseUrl, username, password } = {}) {
     })
 
     if (!res.ok) {
-      const msg = body?.msg || body?.message || `登录失败 HTTP ${res.status}`
-      return { ok: false, message: msg }
+      return { ok: false, message: loginFailureMessage(res, body, text), status: res.status }
+    }
+
+    if (body == null) {
+      return {
+        ok: false,
+        message: loginFailureMessage(res, null, text) || '登录失败：服务器返回了非 JSON 响应',
+        status: res.status,
+      }
     }
 
     let data
     try {
       data = unwrapData(body)
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : '登录失败' }
+      const code = error && typeof error.code === 'number' ? error.code : undefined
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : '登录失败',
+        status: code,
+      }
+    }
+
+    try {
+      await persistAuthCookies(base, SESSION_TTL_MS)
+    } catch {
+      // Login already succeeded; cookie persistence is best-effort.
     }
 
     return {
@@ -134,10 +233,11 @@ async function login({ baseUrl, username, password } = {}) {
       },
     }
   } catch (error) {
-    return {
-      ok: false,
-      message: error instanceof Error ? error.message : '登录失败',
-    }
+    const raw = error instanceof Error ? error.message : '登录失败'
+    const message = /aborted|timeout|network|ENOTFOUND|ECONNREFUSED/i.test(raw)
+      ? `无法连接 SkillHub：${raw}。请检查 Hub 地址与网络`
+      : raw
+    return { ok: false, message }
   }
 }
 
@@ -158,14 +258,14 @@ async function logout({ baseUrl } = {}) {
     // ignore network errors on logout
   }
   try {
-    await getSession().clearStorageData({ storages: ['cookies'] })
+    await clearAuthCookies()
   } catch {
     // ignore
   }
   return { ok: true }
 }
 
-async function me({ baseUrl } = {}) {
+async function me({ baseUrl, persistTtlMs } = {}) {
   const base = normalizeBaseUrl(baseUrl)
   if (!base) return { ok: false, loggedIn: false, message: '缺少 Hub 地址' }
   try {
@@ -182,6 +282,15 @@ async function me({ baseUrl } = {}) {
     const data = unwrapData(body)
     if (!data?.userId) {
       return { ok: false, loggedIn: false, message: '未登录' }
+    }
+    // Migrate session cookies → persistent for remaining client TTL (e.g. after upgrade).
+    const ttl =
+      typeof persistTtlMs === 'number' && persistTtlMs > 0
+        ? persistTtlMs
+        : SESSION_TTL_MS
+    const cookies = await getSession().cookies.get({ url: base })
+    if (cookies.some((c) => c.session || !c.expirationDate)) {
+      await persistAuthCookies(base, ttl)
     }
     return {
       ok: true,
@@ -243,6 +352,9 @@ module.exports = {
   PARTITION,
   getSession,
   normalizeBaseUrl,
+  persistAuthCookies,
+  clearAuthCookies,
+  SESSION_TTL_MS,
   login,
   logout,
   me,

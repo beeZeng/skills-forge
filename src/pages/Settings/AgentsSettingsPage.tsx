@@ -1,49 +1,167 @@
-import { FolderCog, RefreshCw } from 'lucide-react'
+import { ExternalLink, FolderCog, FolderOpen, RefreshCw } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { PathReveal } from '@/components/common/PathReveal'
+import { AgentLogo } from '@/components/hub/AgentLogo'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { useAppStore } from '@/stores/app-store'
 import { cn } from '@/lib/utils'
+import type { AgentInstallation } from '@/types'
+
+async function openExternalUrl(url: string) {
+  const api = window.skillMesh?.shell?.openExternal
+  if (api) {
+    const result = await api(url)
+    if (!result.ok) useAppStore.getState().showToast(result.error || '打开失败', 'error')
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function AgentPathEditor({
+  agent,
+  onClose,
+}: {
+  agent: AgentInstallation
+  onClose: () => void
+}) {
+  const agentPathOverrides = useAppStore((s) => s.agentPathOverrides)
+  const saveAgentPathOverride = useAppStore((s) => s.saveAgentPathOverride)
+  const validateAgentSkillPath = useAppStore((s) => s.validateAgentSkillPath)
+  const [draft, setDraft] = useState(
+    () => agentPathOverrides[agent.id] || agent.defaultSkillPath || agent.skillPath || '',
+  )
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [checking, setChecking] = useState(false)
+
+  const runValidate = async (value: string) => {
+    setChecking(true)
+    try {
+      const result = await validateAgentSkillPath(value)
+      if (!result.ok) {
+        setError(result.error || '路径不合法')
+        return false
+      }
+      setError(null)
+      if (result.displayPath || result.path) {
+        setDraft(result.displayPath || result.path || value)
+      }
+      return true
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const pickFolder = () => {
+    void (async () => {
+      const picked = await window.skillMesh?.dialog.openDirectory({
+        title: `选择 ${agent.name} Skill 保存目录`,
+        defaultPath: draft || agent.defaultSkillPath,
+      })
+      if (!picked) return
+      setDraft(picked)
+      void runValidate(picked)
+    })()
+  }
+
+  return (
+    <div className="mt-3 rounded-mesh border border-mesh-accent/30 bg-mesh-accentSoft/20 p-3">
+      <div className="mb-2 text-xs font-medium text-mesh-text">修改 Skill 保存路径</div>
+      <div className="flex gap-2">
+        <div
+          className={cn(
+            'min-w-0 flex-1 rounded-mesh border bg-mesh-panel px-3 py-2 font-mono text-xs text-mesh-muted',
+            error ? 'border-mesh-danger' : 'border-mesh-border',
+          )}
+          title={draft || '请选择文件夹'}
+        >
+          <span className="block truncate">{draft || '请选择文件夹'}</span>
+        </div>
+        <button
+          type="button"
+          className="inline-flex shrink-0 items-center gap-1 rounded-mesh border border-mesh-border px-2.5 py-1.5 text-xs hover:bg-mesh-panel"
+          onClick={pickFolder}
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+          选择文件夹
+        </button>
+      </div>
+      {agent.defaultSkillPath ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-mesh-dim">
+          <PathReveal label="默认技能目录" path={agent.defaultSkillPath} compact className="min-w-0 flex-1" />
+          <button
+            type="button"
+            className="shrink-0 text-mesh-accent hover:underline"
+            onClick={() => {
+              setDraft(agent.defaultSkillPath || '')
+              setError(null)
+            }}
+          >
+            恢复默认
+          </button>
+        </div>
+      ) : null}
+      {error ? <div className="mt-2 text-xs text-mesh-danger">{error}</div> : null}
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          className="rounded-mesh border border-mesh-border px-3 py-1.5 text-xs"
+          onClick={onClose}
+          disabled={saving}
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          disabled={saving || checking || !draft.trim()}
+          className="rounded-mesh bg-mesh-accent px-3 py-1.5 text-xs text-white disabled:opacity-50"
+          onClick={() => {
+            void (async () => {
+              setSaving(true)
+              try {
+                const ok = await runValidate(draft)
+                if (!ok) return
+                const result = await saveAgentPathOverride(agent.id, draft)
+                if (result.ok) onClose()
+                else if (result.message) setError(result.message)
+              } finally {
+                setSaving(false)
+              }
+            })()
+          }}
+        >
+          {saving ? '保存中…' : '保存'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export function AgentsSettingsPage() {
   const agents = useAppStore((s) => s.agents)
   const scanAgents = useAppStore((s) => s.scanAgents)
   const agentPathOverrides = useAppStore((s) => s.agentPathOverrides)
-  const saveAgentPathOverrides = useAppStore((s) => s.saveAgentPathOverrides)
   const restartRequired = useAppStore((s) => s.restartRequired)
   const defaultSyncAgentIds = useAppStore((s) => s.defaultSyncAgentIds)
   const toggleDefaultSyncAgent = useAppStore((s) => s.toggleDefaultSyncAgent)
   const [scanning, setScanning] = useState(false)
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [editingId, setEditingId] = useState<string | null>(null)
 
-  const openDialog = () => {
-    const next: Record<string, string> = {}
-    for (const agent of agents) {
-      next[agent.id] = agentPathOverrides[agent.id] || agent.defaultSkillPath || agent.skillPath || ''
-    }
-    setDraft(next)
-    setDialogOpen(true)
-  }
-
+  const sortedAgents = useMemo(
+    () =>
+      [...agents].sort((a, b) => {
+        if (a.installed === b.installed) return a.name.localeCompare(b.name, 'zh')
+        return a.installed ? -1 : 1
+      }),
+    [agents],
+  )
   const detectedCount = useMemo(() => agents.filter((a) => a.installed).length, [agents])
 
   return (
     <div className="mx-auto max-w-[860px] space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">智能体配置</h1>
-          <p className="mt-1 text-sm text-mesh-dim">
-            发现本机智能体；勾选「安装后默认同步」后，新安装的 Skill 会自动写入对应技能目录
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 rounded-mesh border border-mesh-border px-3 py-2 text-sm hover:bg-mesh-card"
-            onClick={openDialog}
-          >
-            <FolderCog className="h-4 w-4" />
-            修改路径
-          </button>
+      <PageHeader
+        description="发现本机智能体，配置 Skill 自动同步目录"
+        actions={
           <button
             type="button"
             disabled={scanning}
@@ -56,8 +174,12 @@ export function AgentsSettingsPage() {
             <RefreshCw className={cn('h-4 w-4', scanning && 'animate-spin')} />
             重新扫描
           </button>
-        </div>
-      </div>
+        }
+      />
+
+      <p className="text-sm text-mesh-dim">
+        已检测到 {detectedCount} 个智能体。勾选「安装 Skill 后自动同步至智能体」后，新安装的 Skill 会自动写入对应目录。
+      </p>
 
       {restartRequired ? (
         <div className="rounded-mesh border border-mesh-warning/40 bg-mesh-warning/10 px-4 py-3 text-sm text-mesh-warning">
@@ -74,127 +196,92 @@ export function AgentsSettingsPage() {
 
       <div className="space-y-3">
         <div className="text-sm text-mesh-muted">已发现智能体 · {detectedCount} 个可用</div>
-        {agents.map((agent) => (
+        {sortedAgents.map((agent) => (
           <div key={agent.id} className="rounded-mesh border border-mesh-border bg-mesh-card p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="inline-flex items-center gap-2 font-medium">
-                  <span className={cn('h-2.5 w-2.5 rounded-full', agent.installed ? 'bg-mesh-success' : 'bg-mesh-dim')} />
-                  {agent.name}
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="inline-flex flex-wrap items-center gap-2.5 font-medium">
+                  <span className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-mesh-panel ring-1 ring-mesh-border">
+                    <AgentLogo agentId={agent.id} className="h-[78%] w-[78%]" />
+                    <span
+                      className={cn(
+                        'absolute right-0.5 bottom-0.5 h-2 w-2 rounded-full ring-2 ring-mesh-card',
+                        agent.installed ? 'bg-mesh-success' : 'bg-mesh-dim',
+                      )}
+                    />
+                  </span>
+                  <span>{agent.name}</span>
+                  {agent.version ? (
+                    <span className="rounded-md bg-mesh-panel px-1.5 py-0.5 font-mono text-[11px] font-normal text-mesh-muted">
+                      v{agent.version}
+                    </span>
+                  ) : null}
                 </div>
                 {agent.installed ? (
-                  <>
-                    <div className="mt-1 text-xs text-mesh-dim">
-                      {agent.executablePath || '已通过 skill 目录发现'}
+                  <div className="mt-2 space-y-2 text-[11px]">
+                    <div>
+                      <div className="mb-0.5 text-mesh-dim">程序安装目录</div>
+                      <PathReveal label="程序目录" path={agent.installPath || agent.executablePath} />
                     </div>
-                    <div className="mt-1 font-mono text-[11px] text-mesh-dim">{agent.skillPath}</div>
-                    {agentPathOverrides[agent.id] ? (
-                      <div className="mt-1 text-[11px] text-mesh-warning">已自定义路径（重启后生效）</div>
-                    ) : null}
-                  </>
+                    <div>
+                      <div className="mb-0.5 text-mesh-dim">Skill 保存目录</div>
+                      <PathReveal
+                        label="技能目录"
+                        path={agent.skillPath || agent.defaultSkillPath}
+                      />
+                      {agentPathOverrides[agent.id] ? (
+                        <div className="mt-0.5 text-mesh-warning">已自定义路径（重启后生效）</div>
+                      ) : null}
+                    </div>
+                  </div>
                 ) : (
-                  <div className="mt-1 text-xs text-mesh-dim">未检测到该智能体</div>
+                  <div className="mt-2 space-y-1.5">
+                    <div className="text-xs text-mesh-dim">未检测到该智能体</div>
+                    {agent.homepageUrl ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 text-xs text-mesh-accent hover:underline"
+                        onClick={() => void openExternalUrl(agent.homepageUrl!)}
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        打开官网
+                        <span className="font-mono text-[11px] text-mesh-dim">{agent.homepageUrl}</span>
+                      </button>
+                    ) : null}
+                  </div>
                 )}
               </div>
-              <div className="flex flex-col items-end gap-2">
-                <div className="text-xs text-mesh-muted">{agent.installed ? '可用' : '未安装'}</div>
+              <div className="flex min-w-0 max-w-full shrink-0 flex-col items-stretch gap-2 sm:items-end">
+                <div className="text-right text-xs text-mesh-muted">{agent.installed ? '可用' : '未安装'}</div>
                 {agent.installed ? (
-                  <label className="inline-flex cursor-pointer items-center gap-2 text-[11px] text-mesh-muted">
-                    <input
-                      type="checkbox"
-                      checked={defaultSyncAgentIds.includes(agent.id)}
-                      onChange={() => toggleDefaultSyncAgent(agent.id)}
-                      className="rounded border-mesh-border"
-                    />
-                    安装后默认同步
-                  </label>
+                  <>
+                    <button
+                      type="button"
+                      className="inline-flex items-center justify-center gap-1 rounded-mesh border border-mesh-border px-2.5 py-1 text-[11px] text-mesh-muted hover:bg-mesh-panel hover:text-mesh-text"
+                      onClick={() => setEditingId((id) => (id === agent.id ? null : agent.id))}
+                    >
+                      <FolderCog className="h-3.5 w-3.5" />
+                      {editingId === agent.id ? '收起' : '修改 Skill 保存路径'}
+                    </button>
+                    <label className="inline-flex cursor-pointer items-center gap-2 whitespace-nowrap text-[11px] text-mesh-muted">
+                      <input
+                        type="checkbox"
+                        checked={defaultSyncAgentIds.includes(agent.id)}
+                        onChange={() => toggleDefaultSyncAgent(agent.id)}
+                        className="shrink-0 rounded border-mesh-border"
+                      />
+                      <span>安装 Skill 后自动同步至智能体</span>
+                    </label>
+                  </>
                 ) : null}
               </div>
             </div>
+            {agent.installed && editingId === agent.id ? (
+              <AgentPathEditor agent={agent} onClose={() => setEditingId(null)} />
+            ) : null}
           </div>
         ))}
       </div>
-
-      {dialogOpen ? (
-        <div className="fixed inset-0 z-[180] flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-mesh border border-mesh-border bg-mesh-panel p-5 shadow-mesh">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="font-semibold">修改智能体 Skill 路径</h2>
-                <p className="mt-1 text-xs text-mesh-dim">统一在此配置，保存后需重启生效</p>
-              </div>
-              <button type="button" className="text-sm text-mesh-dim" onClick={() => setDialogOpen(false)}>
-                关闭
-              </button>
-            </div>
-            <div className="space-y-4">
-              {agents.map((agent) => (
-                <div key={agent.id} className="rounded-mesh border border-mesh-border bg-mesh-card p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="text-sm font-medium">{agent.name}</div>
-                    <span className={cn('text-xs', agent.installed ? 'text-mesh-success' : 'text-mesh-dim')}>
-                      {agent.installed ? '已检测' : '未检测'}
-                    </span>
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      value={draft[agent.id] || ''}
-                      onChange={(e) => setDraft((d) => ({ ...d, [agent.id]: e.target.value }))}
-                      className="min-w-0 flex-1 rounded-mesh border border-mesh-border bg-mesh-panel px-3 py-2 font-mono text-xs outline-none focus:border-mesh-accent"
-                      placeholder={agent.defaultSkillPath || 'Skill 目录路径'}
-                    />
-                    <button
-                      type="button"
-                      className="shrink-0 rounded-mesh border border-mesh-border px-2.5 py-1.5 text-xs hover:bg-mesh-panel"
-                      onClick={() => {
-                        void (async () => {
-                          const picked = await window.skillMesh?.dialog.openDirectory({
-                            title: `选择 ${agent.name} Skill 目录`,
-                            defaultPath: draft[agent.id],
-                          })
-                          if (picked) setDraft((d) => ({ ...d, [agent.id]: picked }))
-                        })()
-                      }}
-                    >
-                      浏览
-                    </button>
-                  </div>
-                  {agent.defaultSkillPath ? (
-                    <div className="mt-1.5 text-[11px] text-mesh-dim">默认：{agent.defaultSkillPath}</div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                className="rounded-mesh border border-mesh-border px-3 py-1.5 text-sm"
-                onClick={() => setDialogOpen(false)}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="rounded-mesh bg-mesh-accent px-3 py-1.5 text-sm text-white"
-                onClick={() => {
-                  void (async () => {
-                    const cleaned: Record<string, string> = {}
-                    for (const agent of agents) {
-                      const value = (draft[agent.id] || '').trim()
-                      const def = agent.defaultSkillPath || ''
-                      if (value && value !== def) cleaned[agent.id] = value
-                    }
-                    await saveAgentPathOverrides(cleaned)
-                    setDialogOpen(false)
-                  })()
-                }}
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
